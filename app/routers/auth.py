@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import GOOGLE_CLIENT_ID
 from app.core.database import get_db
 from app.core.security import (
     create_access_token,
@@ -16,6 +19,7 @@ from app.core.security import (
 from app.dependencies.auth import get_validated_token_payload
 from app.models import RefreshToken, RevokedToken, User, UserType
 from app.schemas import (
+    GoogleLoginRequest,
     LogoutRequest,
     RefreshTokenRequest,
     Token,
@@ -45,6 +49,16 @@ async def _issue_token_pair(user_id: int, db: AsyncSession) -> Token:
         access_token=access_token,
         refresh_token=refresh_token,
     )
+
+
+async def _get_customer_role(db: AsyncSession) -> UserType:
+    result = await db.execute(select(UserType).where(UserType.id == 2))
+    customer_type = result.scalar_one_or_none()
+    if not customer_type:
+        customer_type = UserType(id=2, name="customer")
+        db.add(customer_type)
+        await db.flush()
+    return customer_type
 
 
 async def _revoke_access_token(payload: dict, db: AsyncSession) -> None:
@@ -92,12 +106,7 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
             detail="Email already registered",
         )
 
-    result = await db.execute(select(UserType).where(UserType.id == 2))
-    customer_type = result.scalar_one_or_none()
-    if not customer_type:
-        customer_type = UserType(id=2, name="customer")
-        db.add(customer_type)
-        await db.flush()
+    await _get_customer_role(db)
 
     user = User(
         name=data.name,
@@ -125,6 +134,86 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    user.last_login_at = datetime.utcnow()
+    await db.flush()
+
+    return await _issue_token_pair(user_id=user.id, db=db)
+
+
+@router.post("/google", response_model=Token)
+async def google_login(data: GoogleLoginRequest, db: AsyncSession = Depends(get_db)):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google login is not configured",
+        )
+
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            data.credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google credential is invalid",
+        ) from error
+
+    issuer = idinfo.get("iss")
+    if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google issuer is invalid",
+        )
+
+    google_sub = idinfo.get("sub")
+    email = idinfo.get("email")
+    email_verified = idinfo.get("email_verified")
+
+    if not google_sub or not email or not email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google account data is incomplete",
+        )
+
+    customer_type = await _get_customer_role(db)
+
+    result = await db.execute(select(User).where(User.google_sub == google_sub))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
+    if user is None:
+        fallback_password = hash_password(f"google-auth-{google_sub}")
+        user = User(
+            name=idinfo.get("name") or email.split("@", 1)[0],
+            email=email,
+            password=fallback_password,
+            avatar=idinfo.get("picture"),
+            google_sub=google_sub,
+            user_type_id=customer_type.id,
+            is_confirm=True,
+        )
+        db.add(user)
+        await db.flush()
+    else:
+        if user.google_sub and user.google_sub != google_sub:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already linked to another Google account",
+            )
+
+        user.google_sub = google_sub
+        user.is_confirm = True
+
+        if not user.name and idinfo.get("name"):
+            user.name = idinfo["name"]
+        if not user.avatar and idinfo.get("picture"):
+            user.avatar = idinfo["picture"]
 
     user.last_login_at = datetime.utcnow()
     await db.flush()

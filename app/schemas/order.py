@@ -24,7 +24,7 @@ class OrderDetailOut(BaseModel):
 class OrderOut(BaseModel):
     id: int
     order_code: Optional[str] = None
-    user_id: int
+    user_id: Optional[int] = None
     shipping_address: str
     date_order: datetime
     date_ship: Optional[datetime] = None

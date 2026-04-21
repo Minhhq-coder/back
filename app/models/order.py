@@ -37,7 +37,7 @@ class Order(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_code = Column(String(20), unique=True, index=True, nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     shipping_address = Column(String(255), nullable=False, default="")
     date_order = Column(DateTime, default=datetime.utcnow)
     date_ship = Column(DateTime, nullable=True)

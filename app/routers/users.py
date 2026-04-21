@@ -1,15 +1,16 @@
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import UPLOAD_DIR
 from app.core.database import get_db
 from app.dependencies.auth import require_permission
-from app.models import User
-from app.schemas import AvatarUploadResponse, UserProfileOut, UserUpdate
+from app.models import Cart, Order, User
+from app.schemas import AvatarUploadResponse, MembershipSummaryOut, UserProfileOut, UserUpdate
+from app.services.membership_service import get_user_membership_summary
 
 router = APIRouter(tags=["Users"])
 
@@ -43,6 +44,14 @@ async def get_my_profile(
     current_user: User = Depends(require_permission("profile:read")),
 ):
     return _build_profile_response(current_user)
+
+
+@router.get("/me/membership", response_model=MembershipSummaryOut)
+async def get_my_membership(
+    current_user: User = Depends(require_permission("profile:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_user_membership_summary(db, current_user.id)
 
 
 @router.put("/me", response_model=UserProfileOut)
@@ -92,3 +101,34 @@ async def upload_avatar(
     await db.flush()
 
     return AvatarUploadResponse(avatar=current_user.avatar)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_my_account(
+    current_user: User = Depends(require_permission("profile:delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    avatar_path = None
+    if current_user.avatar and current_user.avatar.startswith(f"/{UPLOAD_DIR}/"):
+        avatar_path = PROJECT_ROOT / current_user.avatar.lstrip("/")
+
+    cart_result = await db.execute(select(Cart).where(Cart.user_id == current_user.id))
+    cart = cart_result.scalar_one_or_none()
+    if cart:
+        await db.delete(cart)
+
+    orders_result = await db.execute(select(Order).where(Order.user_id == current_user.id))
+    for order in orders_result.scalars().all():
+        order.user_id = None
+
+    await db.flush()
+    await db.delete(current_user)
+    await db.flush()
+
+    if avatar_path and avatar_path.exists():
+        try:
+            avatar_path.unlink()
+        except OSError:
+            pass
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

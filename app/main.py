@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
-from app.core.config import UPLOAD_DIR
+from app.core.config import CORS_ORIGINS, UPLOAD_DIR
 from app.core.database import Base, async_session, engine
 from app.models import Order, Permission, UserType
 from app.routers import admin, auth, cart, notifications, orders, payments, products, users
@@ -18,6 +18,7 @@ PERMISSION_DESCRIPTIONS = {
     "profile:read": "View own profile.",
     "profile:update": "Update own profile.",
     "profile:upload_avatar": "Upload own avatar.",
+    "profile:delete": "Delete own account.",
     "cart:read": "View own cart.",
     "cart:write": "Modify own cart.",
     "orders:create": "Create orders from cart.",
@@ -56,6 +57,7 @@ ROLE_PERMISSIONS = {
         "profile:read",
         "profile:update",
         "profile:upload_avatar",
+        "profile:delete",
         "cart:read",
         "cart:write",
         "orders:create",
@@ -93,6 +95,68 @@ async def lifespan(app: FastAPI):
                 text(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS ix_orders_order_code ON orders(order_code)
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE orders
+                    ALTER COLUMN user_id DROP NOT NULL
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    DO $$
+                    DECLARE constraint_name TEXT;
+                    BEGIN
+                        SELECT conname
+                        INTO constraint_name
+                        FROM pg_constraint
+                        WHERE conrelid = 'orders'::regclass
+                          AND contype = 'f'
+                          AND confrelid = 'users'::regclass
+                        LIMIT 1;
+
+                        IF constraint_name IS NOT NULL THEN
+                            EXECUTE format('ALTER TABLE orders DROP CONSTRAINT %I', constraint_name);
+                        END IF;
+
+                        ALTER TABLE orders
+                        ADD CONSTRAINT fk_orders_user_id_users
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                    END $$;
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    DO $$
+                    DECLARE constraint_name TEXT;
+                    BEGIN
+                        SELECT conname
+                        INTO constraint_name
+                        FROM pg_constraint
+                        WHERE conrelid = 'carts'::regclass
+                          AND contype = 'f'
+                          AND confrelid = 'users'::regclass
+                        LIMIT 1;
+
+                        IF constraint_name IS NOT NULL THEN
+                            EXECUTE format('ALTER TABLE carts DROP CONSTRAINT %I', constraint_name);
+                        END IF;
+
+                        ALTER TABLE carts
+                        ADD CONSTRAINT fk_carts_user_id_users
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                    END $$;
                     """
                 )
             )
@@ -416,6 +480,23 @@ async def lifespan(app: FastAPI):
             await conn.execute(
                 text(
                     """
+                    ALTER TABLE users
+                    ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255) NULL
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub
+                    ON users(google_sub)
+                    WHERE google_sub IS NOT NULL
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
                     UPDATE products
                     SET image_url = COALESCE(image_url, image1),
                         original_price = COALESCE(original_price, price),
@@ -488,8 +569,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
