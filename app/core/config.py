@@ -1,4 +1,6 @@
 import os
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,7 +10,45 @@ def _parse_csv_env(name: str, default: str = "") -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/cosmetics_db")
+
+def _normalize_database_url(raw_url: str) -> str:
+    normalized_url = raw_url.strip()
+    if normalized_url.startswith("postgres://"):
+        normalized_url = "postgresql://" + normalized_url[len("postgres://") :]
+    if normalized_url.startswith("postgresql://"):
+        normalized_url = "postgresql+asyncpg://" + normalized_url[len("postgresql://") :]
+
+    parts = urlsplit(normalized_url)
+    query_items = parse_qsl(parts.query, keep_blank_values=True)
+    normalized_query_items: list[tuple[str, str]] = []
+    ssl_value: str | None = None
+
+    for key, value in query_items:
+        if key == "sslmode":
+            ssl_value = ssl_value or value
+            continue
+        normalized_query_items.append((key, value))
+
+    if ssl_value is not None and not any(key == "ssl" for key, _ in normalized_query_items):
+        normalized_query_items.append(("ssl", ssl_value))
+
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(normalized_query_items, doseq=True),
+            parts.fragment,
+        )
+    )
+
+
+DATABASE_URL = _normalize_database_url(
+    os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/cosmetics_db",
+    )
+)
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))

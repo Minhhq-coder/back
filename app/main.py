@@ -506,9 +506,7 @@ async def lifespan(app: FastAPI):
             )
 
     async with async_session() as session:
-        result = await session.execute(
-            select(UserType).options(selectinload(UserType.permissions))
-        )
+        result = await session.execute(select(UserType))
         user_types = {user_type.name: user_type for user_type in result.scalars().all()}
 
         for user_type_id, role_name in ((1, "admin"), (2, "customer")):
@@ -529,6 +527,13 @@ async def lifespan(app: FastAPI):
                 permissions[code] = permission
 
         await session.flush()
+
+        result = await session.execute(
+            select(UserType)
+            .where(UserType.name.in_(ROLE_PERMISSIONS))
+            .options(selectinload(UserType.permissions))
+        )
+        user_types = {user_type.name: user_type for user_type in result.scalars().all()}
 
         for role_name, permission_codes in ROLE_PERMISSIONS.items():
             user_type = user_types.get(role_name)
