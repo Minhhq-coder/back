@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import UPLOAD_DIR
@@ -17,6 +17,10 @@ router = APIRouter(tags=["Users"])
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_DIR = PROJECT_ROOT / UPLOAD_DIR / "avatars"
+
+
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
 
 
 def _build_profile_response(user: User) -> UserProfileOut:
@@ -60,11 +64,18 @@ async def update_my_profile(
     current_user: User = Depends(require_permission("profile:update")),
     db: AsyncSession = Depends(get_db),
 ):
-    if data.email and data.email != current_user.email:
-        result = await db.execute(select(User).where(User.email == data.email, User.id != current_user.id))
+    normalized_email = _normalize_email(data.email) if data.email else None
+
+    if normalized_email and normalized_email != _normalize_email(current_user.email):
+        result = await db.execute(
+            select(User).where(
+                func.lower(User.email) == normalized_email,
+                User.id != current_user.id,
+            )
+        )
         if result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Email already registered")
-        current_user.email = data.email
+        current_user.email = normalized_email
 
     update_data = data.model_dump(exclude_unset=True, exclude={"email"})
     for field, value in update_data.items():

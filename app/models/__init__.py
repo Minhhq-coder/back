@@ -6,3 +6,4 @@ from app.models.order import Order, OrderDetail, OrderStatus, PaymentMethod, Pay
 from app.models.payment import PaymentTransaction, PaymentTransactionStatus
 from app.models.auth import Permission, RolePermission, RefreshToken, RevokedToken
 from app.models.notification import Notification
+from app.models.chatbot import ChatSession, ChatKnowledgeItem, ChatMessage

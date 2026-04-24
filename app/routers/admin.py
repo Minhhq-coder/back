@@ -44,6 +44,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRODUCT_IMAGE_DIR = PROJECT_ROOT / UPLOAD_DIR / "products"
 
 
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
 def _normalize_product_payload(payload: dict) -> dict:
     if payload.get("image_url") and not payload.get("image1"):
         payload["image1"] = payload["image_url"]
@@ -551,11 +555,18 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if data.email and data.email != user.email:
-        email_result = await db.execute(select(User).where(User.email == data.email, User.id != user_id))
+    normalized_email = _normalize_email(data.email) if data.email else None
+
+    if normalized_email and normalized_email != _normalize_email(user.email):
+        email_result = await db.execute(
+            select(User).where(
+                func.lower(User.email) == normalized_email,
+                User.id != user_id,
+            )
+        )
         if email_result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Email already registered")
-        user.email = data.email
+        user.email = normalized_email
 
     if data.user_type_id is not None and data.user_type_id != user.user_type_id:
         role_result = await db.execute(select(UserType).where(UserType.id == data.user_type_id))

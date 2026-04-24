@@ -29,6 +29,10 @@ class PaymentStatusOut(BaseModel):
     latest_payment: Optional[PaymentTransactionOut] = None
 
 
+class PaymentQrCodeOut(BaseModel):
+    image_data_url: str
+
+
 class PaymentWebhookIn(BaseModel):
     transaction_code: str
     status: Literal["paid", "failed", "expired", "cancelled"]

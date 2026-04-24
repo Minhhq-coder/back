@@ -10,3 +10,4 @@ python-dotenv
 python-multipart
 google-auth
 requests
+qrcode

@@ -1,10 +1,8 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as google_id_token
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import GOOGLE_CLIENT_ID
@@ -30,6 +28,23 @@ from app.schemas import (
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _get_google_auth_clients():
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+    except ModuleNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google login dependencies are not installed",
+        ) from error
+
+    return google_requests, google_id_token
 
 
 async def _issue_token_pair(user_id: int, db: AsyncSession) -> Token:
@@ -99,7 +114,8 @@ async def _revoke_refresh_token(refresh_token: str, user_id: int, db: AsyncSessi
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == data.email))
+    normalized_email = _normalize_email(str(data.email))
+    result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -110,7 +126,7 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
     user = User(
         name=data.name,
-        email=data.email,
+        email=normalized_email,
         password=hash_password(data.password),
         phone=data.phone,
         birth_date=data.birth_date,
@@ -125,7 +141,8 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == data.email))
+    normalized_email = _normalize_email(str(data.email))
+    result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(data.password, user.password):
@@ -149,6 +166,8 @@ async def google_login(data: GoogleLoginRequest, db: AsyncSession = Depends(get_
             detail="Google login is not configured",
         )
 
+    google_requests, google_id_token = _get_google_auth_clients()
+
     try:
         idinfo = google_id_token.verify_oauth2_token(
             data.credential,
@@ -169,7 +188,7 @@ async def google_login(data: GoogleLoginRequest, db: AsyncSession = Depends(get_
         )
 
     google_sub = idinfo.get("sub")
-    email = idinfo.get("email")
+    email = _normalize_email(idinfo.get("email") or "")
     email_verified = idinfo.get("email_verified")
 
     if not google_sub or not email or not email_verified:
@@ -184,7 +203,7 @@ async def google_login(data: GoogleLoginRequest, db: AsyncSession = Depends(get_
     user = result.scalar_one_or_none()
 
     if user is None:
-        result = await db.execute(select(User).where(User.email == email))
+        result = await db.execute(select(User).where(func.lower(User.email) == email))
         user = result.scalar_one_or_none()
 
     if user is None:

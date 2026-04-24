@@ -9,7 +9,7 @@ from app.models import Category, Order, OrderDetail, OrderStatus, Product, Produ
 from app.schemas import (
     CategoryOut,
     ProductBrief,
-    ProductOut,
+    ProductDetailOut,
     ProductReviewSummaryOut,
     ReviewCreate,
     ReviewOut,
@@ -216,10 +216,10 @@ async def upsert_product_review(
     return await _build_review_summary(db, product_id, current_user)
 
 
-@router.get("/{product_id}", response_model=ProductOut)
+@router.get("/{product_id}", response_model=ProductDetailOut)
 async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
     product = await _get_public_product_or_404(db, product_id)
     product.view_count += 1
     await db.flush()
     await db.refresh(product)
-    return product
+    return ProductDetailOut.model_validate(product)

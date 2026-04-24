@@ -3,20 +3,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import PAYMENT_WEBHOOK_SECRET
+from app.core.config import ENABLE_MOCK_PAYMENTS, PAYMENT_WEBHOOK_SECRET
 from app.core.database import get_db
-from app.dependencies.auth import get_current_user, require_permission
+from app.dependencies.auth import get_current_user, require_admin, require_permission
 from app.models import (
     Order,
     OrderStatus,
     PaymentMethod,
-    PaymentStatus,
     PaymentTransaction,
     PaymentTransactionStatus,
     User,
 )
-from app.schemas import PaymentStatusOut, PaymentTransactionOut, PaymentWebhookIn
-from app.services.payment_service import can_retry_payment, create_payment_for_order, mark_payment_status
+from app.schemas import (
+    PaymentQrCodeOut,
+    PaymentStatusOut,
+    PaymentTransactionOut,
+    PaymentWebhookIn,
+)
+from app.services.payment_service import (
+    build_qr_image_data_url,
+    can_retry_payment,
+    create_payment_for_order,
+    mark_payment_status,
+)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -31,6 +40,34 @@ async def _load_user_order(db: AsyncSession, user_id: int, order_id: int) -> Ord
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+
+def _is_admin(user: User) -> bool:
+    permissions = {permission.code for permission in getattr(user.user_type, "permissions", [])}
+    return "admin:access" in permissions
+
+
+async def _load_accessible_payment(
+    db: AsyncSession,
+    current_user: User,
+    transaction_code: str,
+) -> PaymentTransaction:
+    result = await db.execute(
+        select(PaymentTransaction)
+        .options(
+            selectinload(PaymentTransaction.order).selectinload(Order.details),
+            selectinload(PaymentTransaction.order).selectinload(Order.payments),
+        )
+        .where(PaymentTransaction.transaction_code == transaction_code)
+    )
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment transaction not found")
+
+    if payment.order.user_id != current_user.id and not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="You do not have access to this payment")
+
+    return payment
 
 
 @router.post("/create-from-order/{order_id}", response_model=PaymentTransactionOut, status_code=status.HTTP_201_CREATED)
@@ -68,6 +105,27 @@ async def get_payment_status(
         payment_status=order.payment_status,
         latest_payment=order.latest_payment,
     )
+
+
+@router.get("/{transaction_code}/qr", response_model=PaymentQrCodeOut)
+async def get_payment_qr_code(
+    transaction_code: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    payment = await _load_accessible_payment(db, current_user, transaction_code)
+    if not payment.qr_payload:
+        raise HTTPException(status_code=404, detail="QR payload not found")
+
+    try:
+        image_data_url = build_qr_image_data_url(payment.qr_payload)
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="QR code generator is not available",
+        ) from error
+
+    return PaymentQrCodeOut(image_data_url=image_data_url)
 
 
 @router.post("/webhook", response_model=PaymentStatusOut)
@@ -110,9 +168,12 @@ async def payment_webhook(
 @router.post("/mock/{transaction_code}/paid", response_model=PaymentStatusOut)
 async def mock_mark_paid(
     transaction_code: str,
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    if not ENABLE_MOCK_PAYMENTS:
+        raise HTTPException(status_code=403, detail="Mock payments are disabled")
+
     result = await db.execute(
         select(PaymentTransaction)
         .options(
@@ -124,6 +185,8 @@ async def mock_mark_paid(
     payment = result.scalar_one_or_none()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment transaction not found")
+    if payment.provider != "mock_qr":
+        raise HTTPException(status_code=400, detail="This payment does not use the mock provider")
 
     order = await mark_payment_status(db, payment, PaymentTransactionStatus.PAID.value)
     return PaymentStatusOut(

@@ -7,10 +7,18 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
-from app.core.config import CORS_ORIGINS, UPLOAD_DIR
+from app.core.config import (
+    CORS_ORIGINS,
+    CHATBOT_SCOPE_FILE,
+    LOCAL_ADMIN_EMAIL,
+    LOCAL_ADMIN_PASSWORD,
+    UPLOAD_DIR,
+)
 from app.core.database import Base, async_session, engine
 from app.models import Order, Permission, UserType
-from app.routers import admin, auth, cart, notifications, orders, payments, products, users
+from app.models import User
+from app.core.security import hash_password
+from app.routers import admin, auth, cart, chatbot, notifications, orders, payments, products, users
 from app.services.order_code_service import generate_unique_order_code
 
 PERMISSION_DESCRIPTIONS = {
@@ -36,6 +44,7 @@ PERMISSION_DESCRIPTIONS = {
     "statistics:read": "View admin statistics.",
     "users:read": "View users in admin.",
     "users:write": "Update users in admin.",
+    "chatbot:manage": "Manage chatbot knowledge base and audit logs.",
 }
 
 ROLE_PERMISSIONS = {
@@ -52,6 +61,7 @@ ROLE_PERMISSIONS = {
         "statistics:read",
         "users:read",
         "users:write",
+        "chatbot:manage",
     ],
     "customer": [
         "profile:read",
@@ -71,14 +81,19 @@ ROLE_PERMISSIONS = {
     ],
 }
 
+LOCAL_ADMIN_NAME = "Local Admin"
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPLOADS_PATH = PROJECT_ROOT / UPLOAD_DIR
+CHATBOT_SCOPE_PATH = PROJECT_ROOT / CHATBOT_SCOPE_FILE
 UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
+    if CHATBOT_SCOPE_PATH.parent:
+        CHATBOT_SCOPE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -558,6 +573,24 @@ async def lifespan(app: FastAPI):
         for order in result.scalars().all():
             order.order_code = await generate_unique_order_code(session)
 
+        if LOCAL_ADMIN_EMAIL and LOCAL_ADMIN_PASSWORD:
+            result = await session.execute(
+                select(User).where(User.email == LOCAL_ADMIN_EMAIL)
+            )
+            admin_user = result.scalar_one_or_none()
+            if admin_user is None:
+                admin_role = user_types.get("admin")
+                if admin_role is not None:
+                    session.add(
+                        User(
+                            name=LOCAL_ADMIN_NAME,
+                            email=LOCAL_ADMIN_EMAIL,
+                            password=hash_password(LOCAL_ADMIN_PASSWORD),
+                            user_type_id=admin_role.id,
+                            is_confirm=True,
+                        )
+                    )
+
         await session.commit()
 
     yield
@@ -590,6 +623,7 @@ app.include_router(payments.router)
 app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(admin.router)
+app.include_router(chatbot.router)
 
 
 @app.get("/", tags=["Root"])

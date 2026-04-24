@@ -1,4 +1,6 @@
+import base64
 from datetime import datetime, timedelta
+from io import BytesIO
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -29,6 +31,24 @@ def build_qr_payload(order: Order, amount: float, transaction_code: str) -> str:
         f"&amount={amount:,.0f}"
         f"&currency=VND"
     )
+
+
+def build_qr_image_data_url(payload: str) -> str:
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+    except ModuleNotFoundError as error:
+        raise RuntimeError("QR code dependencies are not installed") from error
+
+    buffer = BytesIO()
+    image = qrcode.make(payload, image_factory=SvgPathImage)
+    image.save(buffer)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def _order_reference(order: Order) -> str:
+    return order.order_code or f"#{order.id}"
 
 
 async def create_payment_for_order(db: AsyncSession, order: Order) -> PaymentTransaction:
@@ -72,9 +92,9 @@ async def reserve_inventory_for_order(db: AsyncSession, order: Order) -> None:
     for detail in order.details:
         product = products_by_id.get(detail.product_id)
         if not product or not product.is_active:
-            raise ValueError(f"Product '{detail.product_name}' is no longer available")
+            raise ValueError(f"sản phẩm '{detail.product_name}' không còn khả dụng")
         if product.quantity < detail.quantity:
-            raise ValueError(f"Insufficient stock for '{detail.product_name}'")
+            raise ValueError(f"sản phẩm '{detail.product_name}' không đủ tồn kho")
 
     for detail in order.details:
         product = products_by_id[detail.product_id]
@@ -105,6 +125,44 @@ async def restore_inventory_for_order(db: AsyncSession, order: Order) -> None:
     order.inventory_reserved = False
 
 
+async def _mark_payment_failed_for_inventory(
+    db: AsyncSession,
+    order: Order,
+    payment: PaymentTransaction,
+    reason: str,
+) -> None:
+    order_reference = _order_reference(order)
+    payment.status = PaymentTransactionStatus.FAILED.value
+    payment.paid_at = None
+    order.payment_status = PaymentStatus.FAILED.value
+    order.is_paid = False
+    order.paid_at = None
+
+    db.add(
+        Notification(
+            user_id=order.user_id,
+            title="Thanh toán chưa thể hoàn tất",
+            message=(
+                f"Đơn hàng {order_reference} chưa thể xác nhận thanh toán vì {reason}. "
+                "Vui lòng kiểm tra lại giỏ hàng hoặc thử thanh toán lại sau."
+            ),
+            order_id=order.id,
+        )
+    )
+    db.add(
+        Notification(
+            target_role="admin",
+            title=f"Cần xử lý thanh toán {order_reference}",
+            message=(
+                f"Không thể xác nhận thanh toán cho đơn hàng {order_reference} vì {reason}. "
+                "Đơn hàng đã được chuyển sang trạng thái thanh toán thất bại để tránh lỗi webhook."
+            ),
+            order_id=order.id,
+        )
+    )
+    await db.flush()
+
+
 async def mark_payment_status(
     db: AsyncSession,
     payment: PaymentTransaction,
@@ -123,7 +181,15 @@ async def mark_payment_status(
         payment.raw_payload = raw_payload
 
     if new_status == PaymentTransactionStatus.PAID.value:
-        await reserve_inventory_for_order(db, order)
+        try:
+            await reserve_inventory_for_order(db, order)
+        except ValueError as error:
+            await _mark_payment_failed_for_inventory(db, order, payment, str(error))
+            order.payment_transaction_id = payment.transaction_code
+            order.payment_provider = payment.provider
+            return order
+
+        order_reference = _order_reference(order)
         payment.status = PaymentTransactionStatus.PAID.value
         payment.paid_at = datetime.utcnow()
         order.payment_status = PaymentStatus.PAID.value
@@ -133,15 +199,15 @@ async def mark_payment_status(
             Notification(
                 user_id=order.user_id,
                 title="Thanh toán thành công",
-                message=f"Đơn hàng {order.order_code or order.id} đã được thanh toán thành công.",
+                message=f"Đơn hàng {order_reference} đã được thanh toán thành công.",
                 order_id=order.id,
             )
         )
         db.add(
             Notification(
                 target_role="admin",
-                title=f"Thanh toán thành công {order.order_code or order.id}",
-                message=f"Đơn hàng {order.order_code or order.id} đã được thanh toán thành công và sẵn sàng xử lý.",
+                title=f"Thanh toán thành công {order_reference}",
+                message=f"Đơn hàng {order_reference} đã được thanh toán thành công và sẵn sàng xử lý.",
                 order_id=order.id,
             )
         )

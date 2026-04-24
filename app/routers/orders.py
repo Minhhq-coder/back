@@ -20,13 +20,13 @@ from app.models import (
     User,
 )
 from app.schemas import OrderCreate, OrderOut
+from app.services.order_code_service import generate_unique_order_code
 from app.services.payment_service import (
     cancel_open_payments,
     create_payment_for_order,
     reserve_inventory_for_order,
     restore_inventory_for_order,
 )
-from app.services.order_code_service import generate_unique_order_code
 
 router = APIRouter(tags=["Orders"])
 
