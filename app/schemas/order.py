@@ -9,6 +9,7 @@ class OrderCreate(BaseModel):
     shipping_address: str = Field(..., min_length=5, max_length=255)
     payment_method: str = Field(default="cod", pattern="^(cod|qr)$")
     coupon_code: Optional[str] = Field(default=None, max_length=50)
+    cart_item_ids: Optional[list[int]] = Field(default=None, min_length=1)
 
 
 class OrderDetailOut(BaseModel):

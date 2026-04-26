@@ -45,8 +45,8 @@ async def _load_order(db: AsyncSession, order_id: int) -> Order:
     return order
 
 
-async def _clear_cart(cart: Cart, db: AsyncSession) -> None:
-    for item in cart.items:
+async def _clear_cart_items(items: list[CartItem], db: AsyncSession) -> None:
+    for item in items:
         await db.delete(item)
 
 
@@ -65,6 +65,19 @@ async def create_order(
 
     if not cart or not cart.items:
         raise HTTPException(status_code=400, detail="Cart is empty")
+
+    if data.cart_item_ids is None:
+        selected_cart_items = list(cart.items)
+    else:
+        selected_ids = set(data.cart_item_ids)
+        selected_cart_items = [item for item in cart.items if item.id in selected_ids]
+        missing_ids = selected_ids - {item.id for item in selected_cart_items}
+
+        if missing_ids:
+            raise HTTPException(status_code=400, detail="Selected cart item not found")
+
+    if not selected_cart_items:
+        raise HTTPException(status_code=400, detail="No cart items selected")
 
     try:
         payment_method = PaymentMethod(data.payment_method)
@@ -86,7 +99,7 @@ async def create_order(
     await db.flush()
 
     order_subtotal = 0.0
-    for item in cart.items:
+    for item in selected_cart_items:
         product = item.product
         if not product.is_active:
             raise HTTPException(
@@ -178,7 +191,7 @@ async def create_order(
             )
         )
 
-    await _clear_cart(cart, db)
+    await _clear_cart_items(selected_cart_items, db)
     await db.flush()
 
     return await _load_order(db, order.id)
