@@ -49,6 +49,28 @@ async def _get_public_product_or_404(db: AsyncSession, product_id: int) -> Produ
     return product
 
 
+def _apply_product_filters(
+    query,
+    category_id: int | None,
+    min_price: float | None,
+    max_price: float | None,
+):
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="min_price must be less than or equal to max_price",
+        )
+
+    if category_id is not None:
+        query = query.where(Product.category_id == category_id)
+    if min_price is not None:
+        query = query.where(Product.price >= min_price)
+    if max_price is not None:
+        query = query.where(Product.price <= max_price)
+
+    return query
+
+
 async def _user_has_delivered_purchase(db: AsyncSession, user_id: int, product_id: int) -> bool:
     result = await db.execute(
         select(OrderDetail.id)
@@ -104,7 +126,9 @@ async def list_public_categories(db: AsyncSession = Depends(get_db)):
 
 @router.get("", response_model=dict)
 async def list_products(
-    category_id: int | None = None,
+    category_id: int | None = Query(None, ge=1),
+    min_price: float | None = Query(None, ge=0),
+    max_price: float | None = Query(None, ge=0),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -114,8 +138,7 @@ async def list_products(
         Product.is_deleted == False,  # noqa: E712
     )
 
-    if category_id:
-        query = query.where(Product.category_id == category_id)
+    query = _apply_product_filters(query, category_id, min_price, max_price)
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
@@ -138,6 +161,9 @@ async def list_products(
 @router.get("/search", response_model=dict)
 async def search_products(
     q: str = Query(..., min_length=1),
+    category_id: int | None = Query(None, ge=1),
+    min_price: float | None = Query(None, ge=0),
+    max_price: float | None = Query(None, ge=0),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -147,6 +173,8 @@ async def search_products(
         Product.is_deleted == False,  # noqa: E712
         Product.name.ilike(f"%{q}%"),
     )
+
+    query = _apply_product_filters(query, category_id, min_price, max_price)
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
