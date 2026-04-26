@@ -22,6 +22,14 @@ from app.schemas.payment import PaymentQrCodeOut, PaymentTransactionOut, Payment
 from app.schemas.notification import NotificationOut
 from app.schemas.review import ReviewCreate, ReviewOut, ProductReviewSummaryOut
 from app.schemas.membership import MembershipSummaryOut, MembershipTierOut
+from app.schemas.wishlist import WishlistItemOut
+from app.schemas.coupon import (
+    CouponCreate,
+    CouponOut,
+    CouponUpdate,
+    CouponValidateIn,
+    CouponValidateOut,
+)
 from app.schemas.chatbot import (
     ChatbotActionOut,
     ChatbotAuditMessageOut,

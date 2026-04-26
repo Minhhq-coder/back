@@ -7,3 +7,5 @@ from app.models.payment import PaymentTransaction, PaymentTransactionStatus
 from app.models.auth import Permission, RolePermission, RefreshToken, RevokedToken
 from app.models.notification import Notification
 from app.models.chatbot import ChatSession, ChatKnowledgeItem, ChatMessage
+from app.models.wishlist import WishlistItem
+from app.models.coupon import Coupon

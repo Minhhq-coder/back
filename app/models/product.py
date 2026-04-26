@@ -51,3 +51,4 @@ class Product(Base):
     category = relationship("Category", back_populates="products")
     cart_items = relationship("CartItem", back_populates="product")
     reviews = relationship("ProductReview", back_populates="product", cascade="all, delete-orphan")
+    wishlist_items = relationship("WishlistItem", back_populates="product", cascade="all, delete-orphan")

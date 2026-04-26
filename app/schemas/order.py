@@ -8,6 +8,7 @@ from app.schemas.payment import PaymentTransactionOut
 class OrderCreate(BaseModel):
     shipping_address: str = Field(..., min_length=5, max_length=255)
     payment_method: str = Field(default="cod", pattern="^(cod|qr)$")
+    coupon_code: Optional[str] = Field(default=None, max_length=50)
 
 
 class OrderDetailOut(BaseModel):
@@ -35,6 +36,10 @@ class OrderOut(BaseModel):
     payment_provider: Optional[str] = None
     payment_transaction_id: Optional[str] = None
     paid_at: Optional[datetime] = None
+    coupon_code: Optional[str] = None
+    subtotal_amount: float = 0
+    discount_amount: float = 0
+    total_amount: float = 0
     details: list[OrderDetailOut] = []
     latest_payment: Optional[PaymentTransactionOut] = None
 

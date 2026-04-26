@@ -18,7 +18,7 @@ from app.core.database import Base, async_session, engine
 from app.models import Order, Permission, UserType
 from app.models import User
 from app.core.security import hash_password
-from app.routers import admin, auth, cart, chatbot, notifications, orders, payments, products, users
+from app.routers import admin, auth, cart, chatbot, coupons, notifications, orders, payments, products, users, wishlist
 from app.services.order_code_service import generate_unique_order_code
 
 PERMISSION_DESCRIPTIONS = {
@@ -228,6 +228,53 @@ async def lifespan(app: FastAPI):
                     """
                     ALTER TABLE orders
                     ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE orders
+                    ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(50)
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE orders
+                    ADD COLUMN IF NOT EXISTS subtotal_amount DOUBLE PRECISION NOT NULL DEFAULT 0
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE orders
+                    ADD COLUMN IF NOT EXISTS discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE orders
+                    ADD COLUMN IF NOT EXISTS total_amount DOUBLE PRECISION NOT NULL DEFAULT 0
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    UPDATE orders
+                    SET subtotal_amount = COALESCE(NULLIF(subtotal_amount, 0), order_totals.subtotal),
+                        total_amount = COALESCE(NULLIF(total_amount, 0), GREATEST(order_totals.subtotal - discount_amount, 0))
+                    FROM (
+                        SELECT order_id, COALESCE(SUM(product_price * quantity), 0) AS subtotal
+                        FROM order_details
+                        GROUP BY order_id
+                    ) AS order_totals
+                    WHERE orders.id = order_totals.order_id
                     """
                 )
             )
@@ -624,6 +671,8 @@ app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(admin.router)
 app.include_router(chatbot.router)
+app.include_router(wishlist.router)
+app.include_router(coupons.router)
 
 
 @app.get("/", tags=["Root"])

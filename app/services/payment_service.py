@@ -20,6 +20,8 @@ from app.models import (
 
 
 def calculate_order_total(order: Order) -> float:
+    if order.total_amount:
+        return float(order.total_amount)
     return float(sum(detail.product_price * detail.quantity for detail in order.details))
 
 

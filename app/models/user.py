@@ -43,3 +43,4 @@ class User(Base):
     reviews = relationship("ProductReview", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     revoked_tokens = relationship("RevokedToken", back_populates="user", cascade="all, delete-orphan")
+    wishlist_items = relationship("WishlistItem", back_populates="user", cascade="all, delete-orphan")

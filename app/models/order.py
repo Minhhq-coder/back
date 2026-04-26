@@ -49,6 +49,10 @@ class Order(Base):
     payment_transaction_id = Column(String(100), nullable=True)
     paid_at = Column(DateTime, nullable=True)
     inventory_reserved = Column(Boolean, default=False, nullable=False)
+    coupon_code = Column(String(50), nullable=True)
+    subtotal_amount = Column(Float, nullable=False, default=0)
+    discount_amount = Column(Float, nullable=False, default=0)
+    total_amount = Column(Float, nullable=False, default=0)
 
     user = relationship("User", back_populates="orders")
     details = relationship("OrderDetail", back_populates="order", cascade="all, delete-orphan")

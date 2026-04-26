@@ -71,6 +71,25 @@ def _apply_product_filters(
     return query
 
 
+def _apply_product_sort(query, sort: str | None):
+    sort_key = (sort or "newest").strip().lower()
+    sort_map = {
+        "price_asc": (Product.price.asc(), Product.id.desc()),
+        "price_desc": (Product.price.desc(), Product.id.desc()),
+        "best_selling": (Product.purchased_count.desc(), Product.id.desc()),
+        "most_viewed": (Product.view_count.desc(), Product.id.desc()),
+        "newest": (Product.last_updated.desc().nullslast(), Product.id.desc()),
+    }
+
+    if sort_key not in sort_map:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sort. Choose from: price_asc, price_desc, best_selling, most_viewed, newest",
+        )
+
+    return query.order_by(*sort_map[sort_key])
+
+
 async def _user_has_delivered_purchase(db: AsyncSession, user_id: int, product_id: int) -> bool:
     result = await db.execute(
         select(OrderDetail.id)
@@ -129,6 +148,7 @@ async def list_products(
     category_id: int | None = Query(None, ge=1),
     min_price: float | None = Query(None, ge=0),
     max_price: float | None = Query(None, ge=0),
+    sort: str | None = Query("newest"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -143,7 +163,7 @@ async def list_products(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = _apply_product_sort(query, sort).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     products = result.scalars().all()
 
@@ -164,6 +184,7 @@ async def search_products(
     category_id: int | None = Query(None, ge=1),
     min_price: float | None = Query(None, ge=0),
     max_price: float | None = Query(None, ge=0),
+    sort: str | None = Query("newest"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -179,7 +200,7 @@ async def search_products(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = _apply_product_sort(query, sort).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     products = result.scalars().all()
 
@@ -192,6 +213,63 @@ async def search_products(
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
+
+@router.get("/slug/{slug}", response_model=ProductDetailOut)
+async def get_product_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Product).where(
+            Product.slug == slug,
+            Product.is_active == True,  # noqa: E712
+            Product.is_deleted == False,  # noqa: E712
+        )
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    product.view_count += 1
+    await db.flush()
+    await db.refresh(product)
+    return ProductDetailOut.model_validate(product)
+
+
+@router.get("/{product_id}/related", response_model=list[ProductBrief])
+async def get_related_products(
+    product_id: int,
+    limit: int = Query(8, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+):
+    product = await _get_public_product_or_404(db, product_id)
+    result = await db.execute(
+        select(Product)
+        .where(
+            Product.id != product.id,
+            Product.category_id == product.category_id,
+            Product.is_active == True,  # noqa: E712
+            Product.is_deleted == False,  # noqa: E712
+        )
+        .order_by(Product.purchased_count.desc(), Product.view_count.desc(), Product.id.desc())
+        .limit(limit)
+    )
+    items = list(result.scalars().all())
+
+    if len(items) < limit:
+        seen_ids = {item.id for item in items}
+        seen_ids.add(product.id)
+        fallback_result = await db.execute(
+            select(Product)
+            .where(
+                ~Product.id.in_(seen_ids),
+                Product.is_active == True,  # noqa: E712
+                Product.is_deleted == False,  # noqa: E712
+            )
+            .order_by(Product.purchased_count.desc(), Product.view_count.desc(), Product.id.desc())
+            .limit(limit - len(items))
+        )
+        items.extend(fallback_result.scalars().all())
+
+    return [ProductBrief.model_validate(item) for item in items]
 
 
 @router.get("/{product_id}/reviews", response_model=ProductReviewSummaryOut)

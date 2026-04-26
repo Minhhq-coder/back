@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from app.dependencies.auth import require_permission
 from app.models import (
     Cart,
     CartItem,
+    Coupon,
     Notification,
     Order,
     OrderDetail,
@@ -21,6 +22,7 @@ from app.models import (
 )
 from app.schemas import OrderCreate, OrderOut
 from app.services.order_code_service import generate_unique_order_code
+from app.services.coupon_service import get_coupon_by_code, validate_coupon_for_subtotal
 from app.services.payment_service import (
     cancel_open_payments,
     create_payment_for_order,
@@ -83,7 +85,7 @@ async def create_order(
     db.add(order)
     await db.flush()
 
-    order_total = 0.0
+    order_subtotal = 0.0
     for item in cart.items:
         product = item.product
         if not product.is_active:
@@ -107,7 +109,22 @@ async def create_order(
                 product_image=product.image1,
             )
         )
-        order_total += product.price * item.quantity
+        order_subtotal += product.price * item.quantity
+
+    discount_amount = 0.0
+    coupon: Coupon | None = None
+    coupon_code = (data.coupon_code or "").strip()
+    if coupon_code:
+        coupon = await get_coupon_by_code(db, coupon_code)
+        if not coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found")
+        discount_amount = validate_coupon_for_subtotal(coupon, order_subtotal)
+        coupon.used_count += 1
+
+    order.subtotal_amount = round(order_subtotal, 2)
+    order.discount_amount = round(discount_amount, 2)
+    order.total_amount = round(max(order_subtotal - discount_amount, 0), 2)
+    order.coupon_code = coupon.code if coupon else None
 
     await db.flush()
     order = await _load_order(db, order.id)
@@ -117,10 +134,10 @@ async def create_order(
         db.add(
             Notification(
                 user_id=current_user.id,
-                title="Đặt hàng thành công",
+                title="Äáº·t hÃ ng thÃ nh cÃ´ng",
                 message=(
-                    f"Đơn hàng {order.order_code} đã được tạo thành công, tổng giá trị "
-                    f"{order_total:,.0f} VND và sẽ giao tới địa chỉ: {order.shipping_address}."
+                    f"ÄÆ¡n hÃ ng {order.order_code} Ä‘Ã£ Ä‘Æ°á»£c táº¡o thÃ nh cÃ´ng, tá»•ng giÃ¡ trá»‹ "
+                    f"{order.total_amount:,.0f} VND vÃ  sáº½ giao tá»›i Ä‘á»‹a chá»‰: {order.shipping_address}."
                 ),
                 order_id=order.id,
             )
@@ -128,10 +145,10 @@ async def create_order(
         db.add(
             Notification(
                 target_role="admin",
-                title=f"Đơn hàng mới {order.order_code}",
+                title=f"ÄÆ¡n hÃ ng má»›i {order.order_code}",
                 message=(
-                    f"Khách hàng {current_user.name} ({current_user.email}) vừa đặt đơn hàng "
-                    f"{order.order_code}, tổng giá trị {order_total:,.0f} VND, giao tới: {order.shipping_address}."
+                    f"KhÃ¡ch hÃ ng {current_user.name} ({current_user.email}) vá»«a Ä‘áº·t Ä‘Æ¡n hÃ ng "
+                    f"{order.order_code}, tá»•ng giÃ¡ trá»‹ {order.total_amount:,.0f} VND, giao tá»›i: {order.shipping_address}."
                 ),
                 order_id=order.id,
             )
@@ -141,10 +158,10 @@ async def create_order(
         db.add(
             Notification(
                 user_id=current_user.id,
-                title="Đơn hàng chờ thanh toán",
+                title="ÄÆ¡n hÃ ng chá» thanh toÃ¡n",
                 message=(
-                    f"Đơn hàng {order.order_code} đã được tạo. Vui lòng hoàn tất thanh toán QR "
-                    f"trước {payment.expires_at.strftime('%H:%M %d/%m/%Y')}."
+                    f"ÄÆ¡n hÃ ng {order.order_code} Ä‘Ã£ Ä‘Æ°á»£c táº¡o. Vui lÃ²ng hoÃ n táº¥t thanh toÃ¡n QR "
+                    f"trÆ°á»›c {payment.expires_at.strftime('%H:%M %d/%m/%Y')}."
                 ),
                 order_id=order.id,
             )
@@ -152,10 +169,10 @@ async def create_order(
         db.add(
             Notification(
                 target_role="admin",
-                title=f"Đơn hàng mới chờ thanh toán {order.order_code}",
+                title=f"ÄÆ¡n hÃ ng má»›i chá» thanh toÃ¡n {order.order_code}",
                 message=(
-                    f"Khách hàng {current_user.name} ({current_user.email}) vừa tạo đơn hàng "
-                    f"{order.order_code} với hình thức thanh toán QR, tổng giá trị {order_total:,.0f} VND."
+                    f"KhÃ¡ch hÃ ng {current_user.name} ({current_user.email}) vá»«a táº¡o Ä‘Æ¡n hÃ ng "
+                    f"{order.order_code} vá»›i hÃ¬nh thá»©c thanh toÃ¡n QR, tá»•ng giÃ¡ trá»‹ {order.total_amount:,.0f} VND."
                 ),
                 order_id=order.id,
             )
