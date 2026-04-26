@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.dependencies.auth import require_permission
+from app.dependencies.auth import require_admin
 from app.models import Coupon, User
 from app.schemas import (
     CouponCreate,
@@ -63,7 +63,7 @@ async def validate_coupon(
 
 @router.get("/admin/coupons", response_model=list[CouponOut])
 async def list_coupons(
-    _: User = Depends(require_permission("orders:manage")),
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Coupon).order_by(Coupon.created_at.desc()))
@@ -73,7 +73,7 @@ async def list_coupons(
 @router.post("/admin/coupons", response_model=CouponOut, status_code=status.HTTP_201_CREATED)
 async def create_coupon(
     payload: CouponCreate,
-    _: User = Depends(require_permission("orders:manage")),
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     code = await _ensure_unique_code(db, payload.code)
@@ -88,7 +88,7 @@ async def create_coupon(
 async def update_coupon(
     coupon_id: int,
     payload: CouponUpdate,
-    _: User = Depends(require_permission("orders:manage")),
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     coupon = await _get_coupon_or_404(db, coupon_id)
@@ -107,7 +107,7 @@ async def update_coupon(
 @router.delete("/admin/coupons/{coupon_id}", response_model=dict)
 async def delete_coupon(
     coupon_id: int,
-    _: User = Depends(require_permission("orders:manage")),
+    _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     coupon = await _get_coupon_or_404(db, coupon_id)
