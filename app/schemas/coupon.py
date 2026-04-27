@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class CouponBase(BaseModel):
-    code: str = Field(..., min_length=2, max_length=50)
+    code: Optional[str] = Field(default=None, min_length=2, max_length=50)
     discount_type: str = Field(default="percent", pattern="^(percent|fixed)$")
     discount_value: float = Field(..., gt=0)
     min_order_value: float = Field(default=0, ge=0)
@@ -34,6 +34,7 @@ class CouponUpdate(BaseModel):
 
 class CouponOut(CouponBase):
     id: int
+    code: str
     used_count: int
     created_at: datetime
 

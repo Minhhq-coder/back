@@ -1,3 +1,5 @@
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +44,17 @@ async def _ensure_unique_code(db: AsyncSession, code: str, coupon_id: int | None
     return normalized_code
 
 
+async def _generate_unique_code(db: AsyncSession) -> str:
+    for _ in range(20):
+        code = f"SALE{secrets.token_hex(3).upper()}"
+        try:
+            return await _ensure_unique_code(db, code)
+        except HTTPException:
+            continue
+
+    raise HTTPException(status_code=500, detail="Could not generate coupon code")
+
+
 @router.post("/coupons/validate", response_model=CouponValidateOut)
 async def validate_coupon(
     payload: CouponValidateIn,
@@ -76,7 +89,12 @@ async def create_coupon(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    code = await _ensure_unique_code(db, payload.code)
+    normalized_code = normalize_coupon_code(payload.code)
+    code = (
+        await _ensure_unique_code(db, normalized_code)
+        if normalized_code
+        else await _generate_unique_code(db)
+    )
     coupon = Coupon(**payload.model_dump(exclude={"code"}), code=code)
     db.add(coupon)
     await db.flush()
@@ -94,7 +112,11 @@ async def update_coupon(
     coupon = await _get_coupon_or_404(db, coupon_id)
     update_data = payload.model_dump(exclude_unset=True)
     if "code" in update_data:
-        update_data["code"] = await _ensure_unique_code(db, update_data["code"], coupon.id)
+        normalized_code = normalize_coupon_code(update_data["code"])
+        if normalized_code:
+            update_data["code"] = await _ensure_unique_code(db, normalized_code, coupon.id)
+        else:
+            update_data.pop("code")
 
     for field, value in update_data.items():
         setattr(coupon, field, value)
