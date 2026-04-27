@@ -66,6 +66,75 @@ class ProductSalesOut(BaseModel):
 class DailyOrdersOut(BaseModel):
     order_date: date
     total_orders: int
+    revenue: float = 0
+
+
+class CategorySalesOut(BaseModel):
+    category_id: Optional[int] = None
+    category_name: str
+    product_count: int = 0
+    units_sold: int = 0
+    revenue: float = 0
+
+
+class InventoryProductOut(BaseModel):
+    product_id: int
+    product_name: str
+    category_name: Optional[str] = None
+    product_image: Optional[str] = None
+    stock_quantity: int
+    recent_units_sold: int = 0
+
+
+class ProductPerformanceOut(BaseModel):
+    product_id: int
+    product_name: str
+    category_name: Optional[str] = None
+    product_image: Optional[str] = None
+    views: int = 0
+    units_sold: int = 0
+    favorites: int = 0
+    conversion_rate: float = 0
+
+
+class SlowProductOut(BaseModel):
+    product_id: int
+    product_name: str
+    category_name: Optional[str] = None
+    product_image: Optional[str] = None
+    stock_quantity: int
+    units_sold: int = 0
+    revenue: float = 0
+    last_order_at: Optional[datetime] = None
+
+
+class RatingDistributionOut(BaseModel):
+    rating: int
+    total_reviews: int
+
+
+class LowRatedProductOut(BaseModel):
+    product_id: int
+    product_name: str
+    category_name: Optional[str] = None
+    product_image: Optional[str] = None
+    average_rating: float = 0
+    total_reviews: int = 0
+    low_reviews: int = 0
+
+
+class CouponPerformanceOut(BaseModel):
+    code: str
+    discount_type: str
+    discount_value: float
+    used_count: int = 0
+    usage_limit: Optional[int] = None
+    remaining_uses: Optional[int] = None
+    end_at: Optional[datetime] = None
+    is_active: bool = True
+    orders_count: int = 0
+    total_discount: float = 0
+    revenue_after_discount: float = 0
 
 
 class StatisticsOut(BaseModel):
@@ -76,8 +145,23 @@ class StatisticsOut(BaseModel):
     delivered_orders: int
     cancelled_orders: int
     total_revenue: float
+    total_products: int = 0
+    active_products: int = 0
+    hidden_products: int = 0
+    out_of_stock_products: int = 0
+    low_stock_products_count: int = 0
+    total_categories: int = 0
+    active_coupons: int = 0
     top_products: list[ProductSalesOut] = []
     daily_orders: list[DailyOrdersOut] = []
+    category_sales: list[CategorySalesOut] = []
+    low_stock_products: list[InventoryProductOut] = []
+    slow_products: list[SlowProductOut] = []
+    top_viewed_products: list[ProductPerformanceOut] = []
+    top_wishlist_products: list[ProductPerformanceOut] = []
+    rating_distribution: list[RatingDistributionOut] = []
+    low_rated_products: list[LowRatedProductOut] = []
+    coupon_performance: list[CouponPerformanceOut] = []
 
 
 # ── Pagination ────────────────────────────────────────────────────────────────

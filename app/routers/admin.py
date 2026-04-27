@@ -1,9 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import case, func, outerjoin, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,27 +13,37 @@ from app.dependencies.auth import require_permission
 from app.models import (
     CartItem,
     Category,
+    Coupon,
     Order,
     OrderDetail,
     OrderStatus,
     PaymentMethod,
     PaymentStatus,
     Product,
+    ProductReview,
     User,
     UserType,
+    WishlistItem,
 )
 from app.schemas import (
     AdminUserOut,
     AdminUserUpdate,
+    CategorySalesOut,
     CategoryCreate,
     CategoryOut,
     CategoryUpdate,
+    CouponPerformanceOut,
     DailyOrdersOut,
+    InventoryProductOut,
+    LowRatedProductOut,
     OrderOut,
+    ProductPerformanceOut,
     ProductSalesOut,
     ProductCreate,
     ProductOut,
     ProductUpdate,
+    RatingDistributionOut,
+    SlowProductOut,
     StatisticsOut,
 )
 from app.services.payment_service import cancel_open_payments, restore_inventory_for_order
@@ -42,6 +52,19 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRODUCT_IMAGE_DIR = PROJECT_ROOT / UPLOAD_DIR / "products"
+
+
+def _coerce_date(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def _normalize_email(value: str) -> str:
@@ -381,6 +404,7 @@ async def cancel_order_as_admin(
 async def get_statistics(
     start_date: datetime | None = Query(None),
     end_date: datetime | None = Query(None),
+    low_stock_threshold: int = Query(5, ge=1, le=100),
     _: User = Depends(require_permission("statistics:read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -388,15 +412,21 @@ async def get_statistics(
     if start_date:
         filters.append(Order.date_order >= start_date)
     if end_date:
-        filters.append(Order.date_order <= end_date)
+        if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0:
+            filters.append(Order.date_order < end_date + timedelta(days=1))
+        else:
+            filters.append(Order.date_order <= end_date)
+
+    now = datetime.utcnow()
+    delivered_filter = Order.status == OrderStatus.DELIVERED.value
 
     counts_query = select(
         func.count(Order.id),
-        func.coalesce(func.sum(case((Order.status == OrderStatus.PENDING, 1), else_=0)), 0),
-        func.coalesce(func.sum(case((Order.status == OrderStatus.APPROVED, 1), else_=0)), 0),
-        func.coalesce(func.sum(case((Order.status == OrderStatus.SHIPPING, 1), else_=0)), 0),
-        func.coalesce(func.sum(case((Order.status == OrderStatus.DELIVERED, 1), else_=0)), 0),
-        func.coalesce(func.sum(case((Order.status == OrderStatus.CANCELLED, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Order.status == OrderStatus.PENDING.value, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Order.status == OrderStatus.APPROVED.value, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Order.status == OrderStatus.SHIPPING.value, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Order.status == OrderStatus.DELIVERED.value, 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Order.status == OrderStatus.CANCELLED.value, 1), else_=0)), 0),
     )
     if filters:
         counts_query = counts_query.where(*filters)
@@ -411,14 +441,49 @@ async def get_statistics(
         cancelled_orders,
     ) = counts_result.one()
 
-    revenue_join = outerjoin(Order, OrderDetail, Order.id == OrderDetail.order_id)
     revenue_query = select(
-        func.coalesce(func.sum(OrderDetail.product_price * OrderDetail.quantity), 0.0)
-    ).select_from(revenue_join).where(Order.status == OrderStatus.DELIVERED)
+        func.coalesce(func.sum(Order.total_amount), 0.0)
+    ).where(delivered_filter)
     if filters:
         revenue_query = revenue_query.where(*filters)
 
     total_revenue = (await db.execute(revenue_query)).scalar_one()
+
+    product_counts_query = select(
+        func.count(Product.id),
+        func.coalesce(func.sum(case((Product.is_active == True, 1), else_=0)), 0),  # noqa: E712
+        func.coalesce(func.sum(case((Product.is_active == False, 1), else_=0)), 0),  # noqa: E712
+        func.coalesce(func.sum(case((Product.quantity <= 0, 1), else_=0)), 0),
+        func.coalesce(
+            func.sum(
+                case(
+                    ((Product.quantity > 0) & (Product.quantity <= low_stock_threshold), 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+    ).where(Product.is_deleted == False)  # noqa: E712
+    (
+        total_products,
+        active_products,
+        hidden_products,
+        out_of_stock_products,
+        low_stock_products_count,
+    ) = (await db.execute(product_counts_query)).one()
+
+    total_categories = (
+        await db.execute(select(func.count(Category.id)))
+    ).scalar_one()
+
+    active_coupons = (
+        await db.execute(
+            select(func.count(Coupon.id)).where(
+                Coupon.is_active == True,  # noqa: E712
+                or_(Coupon.end_at.is_(None), Coupon.end_at >= now),
+            )
+        )
+    ).scalar_one()
 
     product_sales_query = (
         select(
@@ -433,7 +498,7 @@ async def get_statistics(
         .join(Order, Order.id == OrderDetail.order_id)
         .outerjoin(Product, Product.id == OrderDetail.product_id)
         .outerjoin(Category, Category.id == Product.category_id)
-        .where(Order.status == OrderStatus.DELIVERED)
+        .where(delivered_filter)
         .group_by(
             Product.id,
             Product.name,
@@ -465,6 +530,7 @@ async def get_statistics(
         select(
             func.date(Order.date_order).label("order_day"),
             func.count(Order.id).label("total_orders"),
+            func.coalesce(func.sum(case((delivered_filter, Order.total_amount), else_=0.0)), 0.0).label("revenue"),
         )
         .group_by(func.date(Order.date_order))
         .order_by(func.date(Order.date_order).asc())
@@ -473,11 +539,14 @@ async def get_statistics(
         daily_orders_query = daily_orders_query.where(*filters)
 
     daily_order_rows = (await db.execute(daily_orders_query)).all()
-    daily_order_map = {
-        order_day: int(total or 0)
-        for order_day, total in daily_order_rows
-        if order_day is not None
-    }
+    daily_order_map = {}
+    for order_day, total, revenue in daily_order_rows:
+        parsed_day = _coerce_date(order_day)
+        if parsed_day is not None:
+            daily_order_map[parsed_day] = {
+                "total_orders": int(total or 0),
+                "revenue": float(revenue or 0.0),
+            }
 
     if daily_order_map:
         start_day = min(daily_order_map)
@@ -485,15 +554,342 @@ async def get_statistics(
         daily_orders = []
         current_day = start_day
         while current_day <= end_day:
+            day_data = daily_order_map.get(current_day, {})
             daily_orders.append(
                 DailyOrdersOut(
                     order_date=current_day,
-                    total_orders=daily_order_map.get(current_day, 0),
+                    total_orders=day_data.get("total_orders", 0),
+                    revenue=day_data.get("revenue", 0.0),
                 )
             )
             current_day += timedelta(days=1)
     else:
         daily_orders = []
+
+    product_count_subquery = (
+        select(
+            Product.category_id.label("category_id"),
+            func.count(Product.id).label("product_count"),
+        )
+        .where(Product.is_deleted == False)  # noqa: E712
+        .group_by(Product.category_id)
+        .subquery()
+    )
+    category_sales_subquery = (
+        select(
+            Product.category_id.label("category_id"),
+            func.coalesce(func.sum(OrderDetail.quantity), 0).label("units_sold"),
+            func.coalesce(func.sum(OrderDetail.product_price * OrderDetail.quantity), 0.0).label("revenue"),
+        )
+        .select_from(OrderDetail)
+        .join(Order, Order.id == OrderDetail.order_id)
+        .outerjoin(Product, Product.id == OrderDetail.product_id)
+        .where(delivered_filter)
+        .group_by(Product.category_id)
+    )
+    if filters:
+        category_sales_subquery = category_sales_subquery.where(*filters)
+    category_sales_subquery = category_sales_subquery.subquery()
+
+    category_revenue = func.coalesce(category_sales_subquery.c.revenue, 0.0)
+    category_sales_query = (
+        select(
+            Category.id,
+            Category.name,
+            func.coalesce(product_count_subquery.c.product_count, 0),
+            func.coalesce(category_sales_subquery.c.units_sold, 0),
+            category_revenue,
+        )
+        .outerjoin(product_count_subquery, product_count_subquery.c.category_id == Category.id)
+        .outerjoin(category_sales_subquery, category_sales_subquery.c.category_id == Category.id)
+        .order_by(category_revenue.desc(), Category.name.asc())
+        .limit(8)
+    )
+    category_sales = [
+        CategorySalesOut(
+            category_id=category_id,
+            category_name=category_name,
+            product_count=int(product_count or 0),
+            units_sold=int(units_sold or 0),
+            revenue=float(revenue or 0.0),
+        )
+        for category_id, category_name, product_count, units_sold, revenue in (await db.execute(category_sales_query)).all()
+    ]
+
+    recent_start = now - timedelta(days=7)
+    recent_sales_subquery = (
+        select(
+            OrderDetail.product_id.label("product_id"),
+            func.coalesce(func.sum(OrderDetail.quantity), 0).label("recent_units_sold"),
+        )
+        .select_from(OrderDetail)
+        .join(Order, Order.id == OrderDetail.order_id)
+        .where(
+            delivered_filter,
+            Order.date_order >= recent_start,
+            OrderDetail.product_id.is_not(None),
+        )
+        .group_by(OrderDetail.product_id)
+        .subquery()
+    )
+    low_stock_query = (
+        select(
+            Product.id,
+            Product.name,
+            Category.name,
+            func.coalesce(Product.image1, Product.image_url),
+            Product.quantity,
+            func.coalesce(recent_sales_subquery.c.recent_units_sold, 0),
+        )
+        .outerjoin(Category, Category.id == Product.category_id)
+        .outerjoin(recent_sales_subquery, recent_sales_subquery.c.product_id == Product.id)
+        .where(
+            Product.is_deleted == False,  # noqa: E712
+            Product.quantity <= low_stock_threshold,
+        )
+        .order_by(Product.quantity.asc(), Product.name.asc())
+        .limit(10)
+    )
+    low_stock_products = [
+        InventoryProductOut(
+            product_id=product_id,
+            product_name=product_name,
+            category_name=category_name,
+            product_image=product_image,
+            stock_quantity=int(stock_quantity or 0),
+            recent_units_sold=int(recent_units_sold or 0),
+        )
+        for product_id, product_name, category_name, product_image, stock_quantity, recent_units_sold in (await db.execute(low_stock_query)).all()
+    ]
+
+    product_sales_subquery = (
+        select(
+            OrderDetail.product_id.label("product_id"),
+            func.coalesce(func.sum(OrderDetail.quantity), 0).label("units_sold"),
+            func.coalesce(func.sum(OrderDetail.product_price * OrderDetail.quantity), 0.0).label("revenue"),
+            func.max(Order.date_order).label("last_order_at"),
+        )
+        .select_from(OrderDetail)
+        .join(Order, Order.id == OrderDetail.order_id)
+        .where(delivered_filter, OrderDetail.product_id.is_not(None))
+        .group_by(OrderDetail.product_id)
+    )
+    if filters:
+        product_sales_subquery = product_sales_subquery.where(*filters)
+    product_sales_subquery = product_sales_subquery.subquery()
+
+    slow_products_query = (
+        select(
+            Product.id,
+            Product.name,
+            Category.name,
+            func.coalesce(Product.image1, Product.image_url),
+            Product.quantity,
+            func.coalesce(product_sales_subquery.c.units_sold, 0),
+            func.coalesce(product_sales_subquery.c.revenue, 0.0),
+            product_sales_subquery.c.last_order_at,
+        )
+        .outerjoin(Category, Category.id == Product.category_id)
+        .outerjoin(product_sales_subquery, product_sales_subquery.c.product_id == Product.id)
+        .where(
+            Product.is_deleted == False,  # noqa: E712
+            Product.is_active == True,  # noqa: E712
+            Product.quantity > 0,
+        )
+        .order_by(func.coalesce(product_sales_subquery.c.units_sold, 0).asc(), Product.quantity.desc())
+        .limit(10)
+    )
+    slow_products = [
+        SlowProductOut(
+            product_id=product_id,
+            product_name=product_name,
+            category_name=category_name,
+            product_image=product_image,
+            stock_quantity=int(stock_quantity or 0),
+            units_sold=int(units_sold or 0),
+            revenue=float(revenue or 0.0),
+            last_order_at=last_order_at,
+        )
+        for product_id, product_name, category_name, product_image, stock_quantity, units_sold, revenue, last_order_at in (await db.execute(slow_products_query)).all()
+    ]
+
+    top_viewed_query = (
+        select(
+            Product.id,
+            Product.name,
+            Category.name,
+            func.coalesce(Product.image1, Product.image_url),
+            func.coalesce(Product.view_count, 0),
+            func.coalesce(Product.purchased_count, 0),
+        )
+        .outerjoin(Category, Category.id == Product.category_id)
+        .where(Product.is_deleted == False)  # noqa: E712
+        .order_by(func.coalesce(Product.view_count, 0).desc(), func.coalesce(Product.purchased_count, 0).desc())
+        .limit(8)
+    )
+    top_viewed_products = []
+    for product_id, product_name, category_name, product_image, views, units_sold in (await db.execute(top_viewed_query)).all():
+        views = int(views or 0)
+        units_sold = int(units_sold or 0)
+        top_viewed_products.append(
+            ProductPerformanceOut(
+                product_id=product_id,
+                product_name=product_name,
+                category_name=category_name,
+                product_image=product_image,
+                views=views,
+                units_sold=units_sold,
+                conversion_rate=round((units_sold / views) * 100, 1) if views else 0,
+            )
+        )
+
+    wishlist_count_subquery = (
+        select(
+            WishlistItem.product_id.label("product_id"),
+            func.count(WishlistItem.id).label("favorites"),
+        )
+        .group_by(WishlistItem.product_id)
+        .subquery()
+    )
+    top_wishlist_query = (
+        select(
+            Product.id,
+            Product.name,
+            Category.name,
+            func.coalesce(Product.image1, Product.image_url),
+            func.coalesce(Product.view_count, 0),
+            func.coalesce(Product.purchased_count, 0),
+            func.coalesce(wishlist_count_subquery.c.favorites, 0),
+        )
+        .outerjoin(Category, Category.id == Product.category_id)
+        .outerjoin(wishlist_count_subquery, wishlist_count_subquery.c.product_id == Product.id)
+        .where(
+            Product.is_deleted == False,  # noqa: E712
+            func.coalesce(wishlist_count_subquery.c.favorites, 0) > 0,
+        )
+        .order_by(func.coalesce(wishlist_count_subquery.c.favorites, 0).desc(), Product.name.asc())
+        .limit(8)
+    )
+    top_wishlist_products = [
+        ProductPerformanceOut(
+            product_id=product_id,
+            product_name=product_name,
+            category_name=category_name,
+            product_image=product_image,
+            views=int(views or 0),
+            units_sold=int(units_sold or 0),
+            favorites=int(favorites or 0),
+            conversion_rate=round((int(units_sold or 0) / int(views or 0)) * 100, 1) if int(views or 0) else 0,
+        )
+        for product_id, product_name, category_name, product_image, views, units_sold, favorites in (await db.execute(top_wishlist_query)).all()
+    ]
+
+    rating_rows = (
+        await db.execute(
+            select(ProductReview.rating, func.count(ProductReview.id))
+            .group_by(ProductReview.rating)
+            .order_by(ProductReview.rating.asc())
+        )
+    ).all()
+    rating_map = {int(rating): int(total or 0) for rating, total in rating_rows}
+    rating_distribution = [
+        RatingDistributionOut(rating=rating, total_reviews=rating_map.get(rating, 0))
+        for rating in range(1, 6)
+    ]
+
+    low_rated_query = (
+        select(
+            Product.id,
+            Product.name,
+            Category.name,
+            func.coalesce(Product.image1, Product.image_url),
+            func.avg(ProductReview.rating),
+            func.count(ProductReview.id),
+            func.coalesce(func.sum(case((ProductReview.rating <= 2, 1), else_=0)), 0),
+        )
+        .select_from(ProductReview)
+        .join(Product, Product.id == ProductReview.product_id)
+        .outerjoin(Category, Category.id == Product.category_id)
+        .where(Product.is_deleted == False)  # noqa: E712
+        .group_by(Product.id, Product.name, Category.name, Product.image1, Product.image_url)
+        .having(func.coalesce(func.sum(case((ProductReview.rating <= 2, 1), else_=0)), 0) > 0)
+        .order_by(func.coalesce(func.sum(case((ProductReview.rating <= 2, 1), else_=0)), 0).desc(), func.avg(ProductReview.rating).asc())
+        .limit(8)
+    )
+    low_rated_products = [
+        LowRatedProductOut(
+            product_id=product_id,
+            product_name=product_name,
+            category_name=category_name,
+            product_image=product_image,
+            average_rating=round(float(average_rating or 0.0), 1),
+            total_reviews=int(total_reviews or 0),
+            low_reviews=int(low_reviews or 0),
+        )
+        for product_id, product_name, category_name, product_image, average_rating, total_reviews, low_reviews in (await db.execute(low_rated_query)).all()
+    ]
+
+    coupon_order_subquery = (
+        select(
+            func.upper(Order.coupon_code).label("code"),
+            func.count(Order.id).label("orders_count"),
+            func.coalesce(func.sum(Order.discount_amount), 0.0).label("total_discount"),
+            func.coalesce(func.sum(Order.total_amount), 0.0).label("revenue_after_discount"),
+        )
+        .where(Order.coupon_code.is_not(None), Order.coupon_code != "")
+        .group_by(func.upper(Order.coupon_code))
+    )
+    if filters:
+        coupon_order_subquery = coupon_order_subquery.where(*filters)
+    coupon_order_subquery = coupon_order_subquery.subquery()
+
+    coupon_orders_count = func.coalesce(coupon_order_subquery.c.orders_count, 0)
+    coupon_query = (
+        select(
+            Coupon.code,
+            Coupon.discount_type,
+            Coupon.discount_value,
+            Coupon.used_count,
+            Coupon.usage_limit,
+            Coupon.end_at,
+            Coupon.is_active,
+            coupon_orders_count,
+            func.coalesce(coupon_order_subquery.c.total_discount, 0.0),
+            func.coalesce(coupon_order_subquery.c.revenue_after_discount, 0.0),
+        )
+        .outerjoin(coupon_order_subquery, func.upper(Coupon.code) == coupon_order_subquery.c.code)
+        .order_by(coupon_orders_count.desc(), Coupon.created_at.desc())
+        .limit(10)
+    )
+    coupon_performance = []
+    for (
+        code,
+        discount_type,
+        discount_value,
+        used_count,
+        usage_limit,
+        end_at,
+        is_active,
+        orders_count,
+        total_discount,
+        revenue_after_discount,
+    ) in (await db.execute(coupon_query)).all():
+        remaining_uses = None if usage_limit is None else max(int(usage_limit or 0) - int(used_count or 0), 0)
+        coupon_performance.append(
+            CouponPerformanceOut(
+                code=code,
+                discount_type=discount_type,
+                discount_value=float(discount_value or 0.0),
+                used_count=int(used_count or 0),
+                usage_limit=usage_limit,
+                remaining_uses=remaining_uses,
+                end_at=end_at,
+                is_active=bool(is_active),
+                orders_count=int(orders_count or 0),
+                total_discount=float(total_discount or 0.0),
+                revenue_after_discount=float(revenue_after_discount or 0.0),
+            )
+        )
 
     return StatisticsOut(
         total_orders=total_orders,
@@ -503,8 +899,23 @@ async def get_statistics(
         delivered_orders=delivered_orders,
         cancelled_orders=cancelled_orders,
         total_revenue=float(total_revenue or 0.0),
+        total_products=total_products,
+        active_products=active_products,
+        hidden_products=hidden_products,
+        out_of_stock_products=out_of_stock_products,
+        low_stock_products_count=low_stock_products_count,
+        total_categories=total_categories,
+        active_coupons=active_coupons,
         top_products=top_products,
         daily_orders=daily_orders,
+        category_sales=category_sales,
+        low_stock_products=low_stock_products,
+        slow_products=slow_products,
+        top_viewed_products=top_viewed_products,
+        top_wishlist_products=top_wishlist_products,
+        rating_distribution=rating_distribution,
+        low_rated_products=low_rated_products,
+        coupon_performance=coupon_performance,
     )
 
 

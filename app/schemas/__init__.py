@@ -16,6 +16,9 @@ from app.schemas.cart import CartItemAdd, CartItemUpdate, CartItemOut, CartOut
 from app.schemas.order import (
     OrderCreate, OrderDetailOut, OrderOut,
     StatisticsQuery, StatisticsOut, ProductSalesOut, DailyOrdersOut,
+    CategorySalesOut, InventoryProductOut, ProductPerformanceOut,
+    SlowProductOut, RatingDistributionOut, LowRatedProductOut,
+    CouponPerformanceOut,
     PaginatedResponse,
 )
 from app.schemas.payment import PaymentQrCodeOut, PaymentTransactionOut, PaymentStatusOut, PaymentWebhookIn
