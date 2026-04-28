@@ -73,19 +73,22 @@ def normalize_category_name(value):
 
 def build_product_payload(item, category_id):
     stock_status = repair_text(item.get("stock_status")) or "unknown"
-    image_url = repair_text(item.get("image_url"))
+    image_url = repair_text(item.get("image_url")) or repair_text(item.get("image1"))
+    image1 = repair_text(item.get("image1")) or image_url
     price = float(item.get("price") or 0)
     original_price = float(item.get("original_price") or price or 0)
     quantity = derive_quantity(stock_status)
 
     return {
-        "external_id": repair_text(item.get("id")),
+        "external_id": repair_text(item.get("external_id")) or repair_text(item.get("id")),
         "slug": repair_text(item.get("slug")),
         "name": repair_text(item.get("name")) or "Sản phẩm chưa có tên",
         "brand": repair_text(item.get("brand")),
         "category_id": category_id,
         "subcategory": repair_text(item.get("subcategory")),
-        "image1": image_url,
+        "image1": image1,
+        "image2": repair_text(item.get("image2")),
+        "image3": repair_text(item.get("image3")),
         "image_url": image_url,
         "price": price,
         "original_price": original_price if original_price > 0 else price,
@@ -119,6 +122,9 @@ async def import_products(json_path: Path, deactivate_missing: bool):
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS slug VARCHAR(255)"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS brand VARCHAR(255)"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory VARCHAR(100)"))
+        await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS image1 VARCHAR(255)"))
+        await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS image2 VARCHAR(255)"))
+        await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS image3 VARCHAR(255)"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url VARCHAR(500)"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS original_price DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS currency VARCHAR(10) NOT NULL DEFAULT 'VND'"))

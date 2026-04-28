@@ -11,9 +11,13 @@ from app.core.config import UPLOAD_DIR
 from app.core.database import get_db
 from app.dependencies.auth import require_permission
 from app.models import (
+    Cart,
     CartItem,
     Category,
+    ChatMessage,
+    ChatSession,
     Coupon,
+    Notification,
     Order,
     OrderDetail,
     OrderStatus,
@@ -1000,3 +1004,82 @@ async def update_user(
     )
     user = result.scalar_one()
     return _serialize_admin_user(user)
+
+
+@router.delete("/users/{user_id}", response_model=dict)
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_permission("users:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete your own admin account",
+        )
+
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.user_type).selectinload(UserType.permissions))
+        .where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.user_type.name == "admin":
+        admin_count = (
+            await db.execute(
+                select(func.count(User.id))
+                .join(UserType, UserType.id == User.user_type_id)
+                .where(UserType.name == "admin")
+            )
+        ).scalar_one()
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the last admin account",
+            )
+
+    avatar_path = None
+    if user.avatar and user.avatar.startswith(f"/{UPLOAD_DIR}/"):
+        avatar_path = PROJECT_ROOT / user.avatar.lstrip("/")
+
+    cart_result = await db.execute(select(Cart).where(Cart.user_id == user_id))
+    cart = cart_result.scalar_one_or_none()
+    if cart:
+        await db.delete(cart)
+
+    orders_result = await db.execute(select(Order).where(Order.user_id == user_id))
+    for order in orders_result.scalars().all():
+        order.user_id = None
+
+    chat_sessions_result = await db.execute(
+        select(ChatSession).where(ChatSession.user_id == user_id)
+    )
+    for session in chat_sessions_result.scalars().all():
+        session.user_id = None
+
+    chat_messages_result = await db.execute(
+        select(ChatMessage).where(ChatMessage.user_id == user_id)
+    )
+    for message in chat_messages_result.scalars().all():
+        message.user_id = None
+
+    notifications_result = await db.execute(
+        select(Notification).where(Notification.user_id == user_id)
+    )
+    for notification in notifications_result.scalars().all():
+        await db.delete(notification)
+
+    await db.flush()
+    await db.delete(user)
+    await db.flush()
+
+    if avatar_path and avatar_path.exists():
+        try:
+            avatar_path.unlink()
+        except OSError:
+            pass
+
+    return {"message": "User deleted successfully."}

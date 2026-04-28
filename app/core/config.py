@@ -27,6 +27,8 @@ def _normalize_database_url(raw_url: str) -> str:
         if key == "sslmode":
             ssl_value = ssl_value or value
             continue
+        if key == "channel_binding":
+            continue
         normalized_query_items.append((key, value))
 
     if ssl_value is not None and not any(key == "ssl" for key, _ in normalized_query_items):
