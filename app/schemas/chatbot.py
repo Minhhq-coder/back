@@ -43,6 +43,35 @@ class ChatbotMessageRequest(BaseModel):
         return cleaned or None
 
 
+class ChatbotAskRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    limit: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Message cannot be empty")
+        return cleaned
+
+
+class ChatbotAskContextItem(BaseModel):
+    id: int
+    product_id: int
+    title: str
+    content: str
+    score: float | None = None
+    distance: float | None = None
+    created_at: datetime | None = None
+
+
+class ChatbotAskResponse(BaseModel):
+    message: str
+    context: list[ChatbotAskContextItem] = Field(default_factory=list)
+    answer: str
+
+
 class ChatbotMessageResponse(BaseModel):
     session_id: str
     user_message_id: int

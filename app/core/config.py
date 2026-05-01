@@ -86,6 +86,7 @@ CHATBOT_SCOPE_FILE = os.getenv("CHATBOT_SCOPE_FILE", "chatbot.md").strip() or "c
 CHATBOT_MAX_HISTORY_MESSAGES = int(os.getenv("CHATBOT_MAX_HISTORY_MESSAGES", "8"))
 CHATBOT_WORD_LIMIT = int(os.getenv("CHATBOT_WORD_LIMIT", "100"))
 CHATBOT_STREAM_CHUNK_SIZE = int(os.getenv("CHATBOT_STREAM_CHUNK_SIZE", "24"))
+CHATBOT_EMBEDDING_MODEL = os.getenv("CHATBOT_EMBEDDING_MODEL", "BAAI/bge-m3").strip() or "BAAI/bge-m3"
 CORS_ORIGINS = _parse_csv_env(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173",

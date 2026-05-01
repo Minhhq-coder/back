@@ -20,6 +20,7 @@ from app.models import User
 from app.core.security import hash_password
 from app.routers import admin, auth, cart, chatbot, coupons, notifications, orders, payments, products, users, wishlist
 from app.services.order_code_service import generate_unique_order_code
+from app.services.rag_service import ensure_product_embeddings_table
 
 PERMISSION_DESCRIPTIONS = {
     "admin:access": "Access the admin area.",
@@ -98,6 +99,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "postgresql":
+            await ensure_product_embeddings_table(conn)
             await conn.execute(
                 text(
                     """

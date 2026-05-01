@@ -39,12 +39,23 @@ The backend now exposes a dedicated chatbot module:
 
 - `POST /chatbot/messages`: standard response
 - `POST /chatbot/messages/stream`: SSE streaming response
+- `POST /chatbot/ask`: RAG test endpoint, returns relevant product context plus a temporary answer
 - `GET /chatbot/suggested-questions`: 5 sample prompts for the UI
 - `POST /chatbot/messages/{message_id}/feedback`: helpful / not helpful feedback
 - `GET|POST|PUT|DELETE /chatbot/admin/knowledge`: admin knowledge base management
 - `GET /chatbot/admin/messages`: admin audit log feed
 
 The chatbot is built from the scope in `chatbot.md`, reads product/order/payment data from the existing database, supports optional logged-in context, logs conversations for audit, and falls back to deterministic answers if no AI provider is configured.
+
+### RAG product index
+
+The RAG endpoint uses PostgreSQL/Neon with the `pgvector` extension and `sentence-transformers` model `BAAI/bge-m3`.
+
+```bash
+python index_products.py
+```
+
+Use `python index_products.py --limit 10` for a small test batch, or `python index_products.py --product-id 1` to re-index one product.
 
 ### Render
 

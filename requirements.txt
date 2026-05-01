@@ -11,3 +11,4 @@ python-multipart
 google-auth
 requests
 qrcode
+sentence-transformers

@@ -35,6 +35,9 @@ from app.schemas.coupon import (
 )
 from app.schemas.chatbot import (
     ChatbotActionOut,
+    ChatbotAskContextItem,
+    ChatbotAskRequest,
+    ChatbotAskResponse,
     ChatbotAuditMessageOut,
     ChatbotAuditPageOut,
     ChatbotFeedbackIn,

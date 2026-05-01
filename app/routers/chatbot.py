@@ -10,6 +10,8 @@ from app.core.database import get_db
 from app.dependencies.auth import get_optional_current_user, require_permission
 from app.models import ChatKnowledgeItem, ChatMessage, ChatSession, User
 from app.schemas import (
+    ChatbotAskResponse,
+    ChatbotAskRequest,
     ChatbotAuditMessageOut,
     ChatbotAuditPageOut,
     ChatbotFeedbackIn,
@@ -25,8 +27,23 @@ from app.services.chatbot_service import (
     handle_chat_message,
     stream_chat_response,
 )
+from app.services.rag_service import search_relevant_products
 
 router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
+
+
+def _build_rag_placeholder_answer(context: list[dict]) -> str:
+    if not context:
+        return (
+            "Mình chưa tìm thấy sản phẩm phù hợp trong dữ liệu RAG. "
+            "Bạn có thể thử hỏi cụ thể hơn về loại da, công dụng hoặc tên sản phẩm."
+        )
+
+    titles = ", ".join(item["title"] for item in context[:3])
+    return (
+        "Mình tìm thấy một số sản phẩm liên quan: "
+        f"{titles}. Đây là câu trả lời tạm thời dựa trên context RAG."
+    )
 
 
 def _slugify(value: str) -> str:
@@ -85,6 +102,23 @@ async def create_chat_message(
     current_user: User | None = Depends(get_optional_current_user),
 ):
     return await handle_chat_message(db, payload, current_user)
+
+
+@router.post("/ask", response_model=ChatbotAskResponse)
+async def ask_chatbot_with_rag(
+    payload: ChatbotAskRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        context = await search_relevant_products(db, payload.message, payload.limit)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    return ChatbotAskResponse(
+        message=payload.message,
+        context=context,
+        answer=_build_rag_placeholder_answer(context),
+    )
 
 
 @router.post("/messages/stream")
