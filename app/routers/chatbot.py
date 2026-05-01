@@ -23,6 +23,7 @@ from app.schemas import (
     ChatbotSuggestedQuestionsOut,
 )
 from app.services.chatbot_service import (
+    generate_rag_context_answer,
     get_suggested_questions,
     handle_chat_message,
     stream_chat_response,
@@ -114,10 +115,15 @@ async def ask_chatbot_with_rag(
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
+    try:
+        answer = await generate_rag_context_answer(payload.message, context)
+    except Exception:
+        answer = ""
+
     return ChatbotAskResponse(
         message=payload.message,
         context=context,
-        answer=_build_rag_placeholder_answer(context),
+        answer=answer or _build_rag_placeholder_answer(context),
     )
 
 

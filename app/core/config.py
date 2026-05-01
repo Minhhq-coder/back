@@ -80,6 +80,15 @@ CHATBOT_AI_MODEL = (
     or os.getenv("OPENROUTER_MODEL", "").strip()
     or os.getenv("OPENAI_MODEL", "").strip()
 )
+GEMINI_API_KEY = (
+    os.getenv("GEMINI_API_KEY", "").strip()
+    or os.getenv("GOOGLE_API_KEY", "").strip()
+)
+GEMINI_API_BASE_URL = (
+    os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").strip()
+    or "https://generativelanguage.googleapis.com/v1beta"
+)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 CHATBOT_AI_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_AI_TIMEOUT_SECONDS", "30"))
 CHATBOT_HOTLINE = os.getenv("CHATBOT_HOTLINE", "").strip()
 CHATBOT_SCOPE_FILE = os.getenv("CHATBOT_SCOPE_FILE", "chatbot.md").strip() or "chatbot.md"
