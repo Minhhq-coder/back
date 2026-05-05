@@ -60,6 +60,11 @@ PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "bank_qr").strip().lower()
 PAYMENT_WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET", "change-payment-webhook-secret")
 PAYMENT_EXPIRE_MINUTES = int(os.getenv("PAYMENT_EXPIRE_MINUTES", "15"))
 ENABLE_MOCK_PAYMENTS = os.getenv("ENABLE_MOCK_PAYMENTS", "false").lower() == "true"
+SEPAY_BANK_NAME = os.getenv("SEPAY_BANK_NAME", "").strip()
+SEPAY_ACCOUNT_NUMBER = os.getenv("SEPAY_ACCOUNT_NUMBER", "").strip()
+SEPAY_ACCOUNT_NAME = os.getenv("SEPAY_ACCOUNT_NAME", "").strip()
+SEPAY_WEBHOOK_API_KEY = os.getenv("SEPAY_WEBHOOK_API_KEY", "").strip()
+SEPAY_QR_BASE_URL = os.getenv("SEPAY_QR_BASE_URL", "https://qr.sepay.vn/img").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 DATABASE_ECHO = os.getenv("DATABASE_ECHO", "false").lower() == "true"
 LOCAL_ADMIN_EMAIL = os.getenv("LOCAL_ADMIN_EMAIL", "").strip().lower()
@@ -89,14 +94,15 @@ GEMINI_API_BASE_URL = (
     or "https://generativelanguage.googleapis.com/v1beta"
 )
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-CHATBOT_AI_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_AI_TIMEOUT_SECONDS", "30"))
+CHATBOT_AI_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_AI_TIMEOUT_SECONDS", "12"))
 CHATBOT_HOTLINE = os.getenv("CHATBOT_HOTLINE", "").strip()
 CHATBOT_SCOPE_FILE = os.getenv("CHATBOT_SCOPE_FILE", "chatbot.md").strip() or "chatbot.md"
 CHATBOT_MAX_HISTORY_MESSAGES = int(os.getenv("CHATBOT_MAX_HISTORY_MESSAGES", "8"))
 CHATBOT_WORD_LIMIT = int(os.getenv("CHATBOT_WORD_LIMIT", "100"))
 CHATBOT_STREAM_CHUNK_SIZE = int(os.getenv("CHATBOT_STREAM_CHUNK_SIZE", "24"))
 CHATBOT_EMBEDDING_MODEL = os.getenv("CHATBOT_EMBEDDING_MODEL", "BAAI/bge-m3").strip() or "BAAI/bge-m3"
+CHATBOT_RAG_TIMEOUT_SECONDS = float(os.getenv("CHATBOT_RAG_TIMEOUT_SECONDS", "3"))
 CORS_ORIGINS = _parse_csv_env(
     "CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
 )

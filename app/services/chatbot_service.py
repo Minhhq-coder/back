@@ -22,6 +22,7 @@ from app.core.config import (
     CHATBOT_AI_TIMEOUT_SECONDS,
     CHATBOT_HOTLINE,
     CHATBOT_MAX_HISTORY_MESSAGES,
+    CHATBOT_RAG_TIMEOUT_SECONDS,
     CHATBOT_SCOPE_FILE,
     CHATBOT_STREAM_CHUNK_SIZE,
     CHATBOT_WORD_LIMIT,
@@ -683,8 +684,11 @@ async def _enhance_products_with_rag(
     product_id: int | None,
 ) -> list[Product]:
     try:
-        matches = await search_relevant_products(db, message, limit=5)
-    except RuntimeError:
+        matches = await asyncio.wait_for(
+            search_relevant_products(db, message, limit=5),
+            timeout=CHATBOT_RAG_TIMEOUT_SECONDS,
+        )
+    except (RuntimeError, TimeoutError):
         return products
 
     matched_ids: list[int] = []

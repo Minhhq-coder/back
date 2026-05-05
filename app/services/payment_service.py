@@ -1,12 +1,20 @@
 import base64
 from datetime import datetime, timedelta
 from io import BytesIO
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import PAYMENT_EXPIRE_MINUTES, PAYMENT_PROVIDER
+from app.core.config import (
+    PAYMENT_EXPIRE_MINUTES,
+    PAYMENT_PROVIDER,
+    SEPAY_ACCOUNT_NAME,
+    SEPAY_ACCOUNT_NUMBER,
+    SEPAY_BANK_NAME,
+    SEPAY_QR_BASE_URL,
+)
 from app.models import (
     Notification,
     Order,
@@ -26,6 +34,9 @@ def calculate_order_total(order: Order) -> float:
 
 
 def build_qr_payload(order: Order, amount: float, transaction_code: str) -> str:
+    if PAYMENT_PROVIDER == "sepay":
+        return _order_reference(order)
+
     return (
         f"provider={PAYMENT_PROVIDER}"
         f"&transaction={transaction_code}"
@@ -33,6 +44,21 @@ def build_qr_payload(order: Order, amount: float, transaction_code: str) -> str:
         f"&amount={amount:,.0f}"
         f"&currency=VND"
     )
+
+
+def build_sepay_qr_url(order: Order, amount: float) -> str:
+    if not SEPAY_ACCOUNT_NUMBER or not SEPAY_BANK_NAME:
+        raise RuntimeError("SePay bank name and account number are not configured")
+
+    query = urlencode(
+        {
+            "acc": SEPAY_ACCOUNT_NUMBER,
+            "bank": SEPAY_BANK_NAME,
+            "amount": int(round(amount)),
+            "des": _order_reference(order),
+        }
+    )
+    return f"{SEPAY_QR_BASE_URL}?{query}"
 
 
 def build_qr_image_data_url(payload: str) -> str:
@@ -47,6 +73,16 @@ def build_qr_image_data_url(payload: str) -> str:
     image.save(buffer)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/svg+xml;base64,{encoded}"
+
+
+def get_payment_qr_image(payment: PaymentTransaction) -> str:
+    if payment.provider == "sepay" and payment.checkout_url:
+        return payment.checkout_url
+
+    if not payment.qr_payload:
+        raise RuntimeError("QR payload is empty")
+
+    return build_qr_image_data_url(payment.qr_payload)
 
 
 def _order_reference(order: Order) -> str:
@@ -68,6 +104,14 @@ async def create_payment_for_order(db: AsyncSession, order: Order) -> PaymentTra
         qr_payload=build_qr_payload(order, amount, transaction_code),
         expires_at=expires_at,
     )
+
+    if PAYMENT_PROVIDER == "sepay":
+        payment.checkout_url = build_sepay_qr_url(order, amount)
+        payment.raw_payload = (
+            f"bank={SEPAY_BANK_NAME};account={SEPAY_ACCOUNT_NUMBER};"
+            f"account_name={SEPAY_ACCOUNT_NAME};description={_order_reference(order)}"
+        )
+
     db.add(payment)
 
     order.payment_method = PaymentMethod.QR.value

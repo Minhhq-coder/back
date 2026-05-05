@@ -3,12 +3,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import ENABLE_MOCK_PAYMENTS, PAYMENT_WEBHOOK_SECRET
+from app.core.config import (
+    ENABLE_MOCK_PAYMENTS,
+    PAYMENT_WEBHOOK_SECRET,
+    SEPAY_ACCOUNT_NAME,
+    SEPAY_ACCOUNT_NUMBER,
+    SEPAY_BANK_NAME,
+    SEPAY_WEBHOOK_API_KEY,
+)
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin, require_permission
 from app.models import (
     Order,
     OrderStatus,
+    PaymentStatus,
     PaymentMethod,
     PaymentTransaction,
     PaymentTransactionStatus,
@@ -19,11 +27,12 @@ from app.schemas import (
     PaymentStatusOut,
     PaymentTransactionOut,
     PaymentWebhookIn,
+    SepayWebhookIn,
 )
 from app.services.payment_service import (
-    build_qr_image_data_url,
     can_retry_payment,
     create_payment_for_order,
+    get_payment_qr_image,
     mark_payment_status,
 )
 
@@ -45,6 +54,16 @@ async def _load_user_order(db: AsyncSession, user_id: int, order_id: int) -> Ord
 def _is_admin(user: User) -> bool:
     permissions = {permission.code for permission in getattr(user.user_type, "permissions", [])}
     return "admin:access" in permissions
+
+
+def _extract_apikey(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+
+    scheme, _, token = authorization.strip().partition(" ")
+    if scheme.lower() != "apikey" or not token:
+        return None
+    return token.strip()
 
 
 async def _load_accessible_payment(
@@ -118,14 +137,25 @@ async def get_payment_qr_code(
         raise HTTPException(status_code=404, detail="QR payload not found")
 
     try:
-        image_data_url = build_qr_image_data_url(payment.qr_payload)
+        image_data_url = get_payment_qr_image(payment)
     except RuntimeError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="QR code generator is not available",
         ) from error
 
-    return PaymentQrCodeOut(image_data_url=image_data_url)
+    is_sepay_payment = payment.provider == "sepay"
+    return PaymentQrCodeOut(
+        image_data_url=image_data_url,
+        qr_url=image_data_url if is_sepay_payment else None,
+        bank_name=SEPAY_BANK_NAME if is_sepay_payment else None,
+        account_number=SEPAY_ACCOUNT_NUMBER if is_sepay_payment else None,
+        account_name=SEPAY_ACCOUNT_NAME if is_sepay_payment else None,
+        amount=payment.amount,
+        currency=payment.currency,
+        transfer_content=payment.qr_payload,
+        expires_at=payment.expires_at,
+    )
 
 
 @router.post("/webhook", response_model=PaymentStatusOut)
@@ -163,6 +193,62 @@ async def payment_webhook(
         payment_status=order.payment_status,
         latest_payment=order.latest_payment,
     )
+
+
+@router.post("/sepay/webhook")
+async def sepay_payment_webhook(
+    data: SepayWebhookIn,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not SEPAY_WEBHOOK_API_KEY or _extract_apikey(authorization) != SEPAY_WEBHOOK_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid SePay webhook API key")
+
+    if data.transferType != "in":
+        return {"success": True}
+
+    if SEPAY_ACCOUNT_NUMBER and data.accountNumber and data.accountNumber != SEPAY_ACCOUNT_NUMBER:
+        raise HTTPException(status_code=400, detail="Unexpected SePay account number")
+
+    payment_code = (data.code or "").strip()
+    if not payment_code:
+        return {"success": True}
+
+    result = await db.execute(
+        select(Order)
+        .options(selectinload(Order.details), selectinload(Order.payments))
+        .where(Order.order_code == payment_code)
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found for SePay payment code")
+
+    if order.payment_status == PaymentStatus.PAID.value:
+        return {"success": True}
+
+    if float(data.transferAmount) < float(order.total_amount):
+        raise HTTPException(status_code=400, detail="SePay transfer amount is lower than order total")
+
+    payment = next(
+        (
+            item
+            for item in order.payments
+            if item.provider == "sepay" and item.status == PaymentTransactionStatus.PENDING.value
+        ),
+        None,
+    )
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Pending SePay payment transaction not found")
+
+    await mark_payment_status(
+        db,
+        payment,
+        PaymentTransactionStatus.PAID.value,
+        provider_transaction_id=data.referenceCode or str(data.id),
+        raw_payload=data.model_dump_json(),
+    )
+
+    return {"success": True}
 
 
 @router.post("/mock/{transaction_code}/paid", response_model=PaymentStatusOut)

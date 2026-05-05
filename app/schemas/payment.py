@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 
 class PaymentTransactionOut(BaseModel):
@@ -31,6 +32,14 @@ class PaymentStatusOut(BaseModel):
 
 class PaymentQrCodeOut(BaseModel):
     image_data_url: str
+    qr_url: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    account_name: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    transfer_content: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 class PaymentWebhookIn(BaseModel):
@@ -38,3 +47,20 @@ class PaymentWebhookIn(BaseModel):
     status: Literal["paid", "failed", "expired", "cancelled"]
     provider_transaction_id: Optional[str] = None
     raw_payload: Optional[str] = None
+
+
+class SepayWebhookIn(BaseModel):
+    id: int | str
+    gateway: Optional[str] = None
+    transactionDate: Optional[str] = None
+    accountNumber: Optional[str] = None
+    code: Optional[str] = None
+    content: Optional[str] = None
+    transferType: str
+    transferAmount: float
+    accumulated: Optional[float] = None
+    subAccount: Optional[str] = None
+    referenceCode: Optional[str] = None
+    description: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
