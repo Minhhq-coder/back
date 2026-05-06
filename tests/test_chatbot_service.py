@@ -7,6 +7,9 @@ from app.services.chatbot_service import (
     _detect_small_talk_intent,
     _extract_order_code,
     _fold_text,
+    _has_specific_product_terms,
+    _should_search_product_context,
+    _should_use_last_product_context,
     _truncate_words,
 )
 
@@ -48,10 +51,39 @@ def test_build_small_talk_answer_for_greeting_is_conversational():
 
 
 def test_chunk_text_splits_into_small_segments():
-    chunks = _chunk_text("mot hai ba bon nam sau bay", 8)
+    text = "mot hai ba bon nam sau bay"
+    chunks = _chunk_text(text, 8)
 
     assert chunks
     assert all(len(chunk) <= 8 for chunk in chunks)
+    assert "".join(chunks) == text
+
+
+def test_should_use_last_product_context_for_generic_follow_up():
+    message = "còn hàng không?"
+
+    assert _should_use_last_product_context(_fold_text(message), message) is True
+
+
+def test_should_use_last_product_context_for_add_to_cart_follow_up():
+    message = "thêm vào giỏ giúp tôi"
+
+    assert _should_use_last_product_context(_fold_text(message), message) is True
+
+
+def test_should_not_use_last_product_context_when_message_names_product():
+    message = "serum vitamin C còn hàng không?"
+
+    assert _has_specific_product_terms(message) is True
+    assert _should_use_last_product_context(_fold_text(message), message) is False
+
+
+def test_should_skip_product_context_for_order_question_without_product_id():
+    assert _should_search_product_context(_fold_text("đơn hàng của tôi tới đâu rồi"), None) is False
+
+
+def test_should_search_product_context_for_price_follow_up_with_product_id():
+    assert _should_search_product_context(_fold_text("giá bao nhiêu"), 10) is True
 
 
 def test_build_single_product_answer_contains_price_and_stock():
