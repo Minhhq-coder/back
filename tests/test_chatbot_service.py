@@ -1,5 +1,6 @@
-from app.models import Product
+from app.models import Order, OrderDetail, PaymentStatus, Product
 from app.services.chatbot_service import (
+    _build_order_answer,
     _build_small_talk_answer,
     _build_missing_info_answer,
     _build_single_product_answer,
@@ -8,6 +9,7 @@ from app.services.chatbot_service import (
     _extract_order_code,
     _fold_text,
     _has_specific_product_terms,
+    _is_order_total_question,
     _should_search_product_context,
     _should_use_last_product_context,
     _truncate_words,
@@ -82,8 +84,42 @@ def test_should_skip_product_context_for_order_question_without_product_id():
     assert _should_search_product_context(_fold_text("đơn hàng của tôi tới đâu rồi"), None) is False
 
 
+def test_should_skip_product_context_for_order_total_question():
+    assert _should_search_product_context(_fold_text("giá đơn hàng là bao nhiêu"), None) is False
+
+
+def test_order_total_question_detection_ignores_shipping_word():
+    assert _is_order_total_question(_fold_text("đơn hàng giao tới đâu rồi")) is False
+
+
+def test_order_total_question_detection_accepts_order_price_question():
+    assert _is_order_total_question(_fold_text("giá đơn hàng là bao nhiêu")) is True
+
+
 def test_should_search_product_context_for_price_follow_up_with_product_id():
     assert _should_search_product_context(_fold_text("giá bao nhiêu"), 10) is True
+
+
+def test_build_order_answer_includes_total_amount():
+    order = Order(
+        id=1,
+        order_code="OD123456",
+        status="pending",
+        payment_method="qr",
+        payment_status=PaymentStatus.PENDING.value,
+        subtotal_amount=300000,
+        discount_amount=50000,
+        total_amount=250000,
+        details=[
+            OrderDetail(product_name="Serum A", quantity=2, product_price=150000),
+        ],
+    )
+
+    answer = _build_order_answer([order], _fold_text("giá đơn hàng là bao nhiêu"))
+
+    assert "OD123456" in answer
+    assert "250.000 VND" in answer
+    assert "50.000 VND" in answer
 
 
 def test_build_single_product_answer_contains_price_and_stock():

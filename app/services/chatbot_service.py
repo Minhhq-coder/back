@@ -90,6 +90,11 @@ SENSITIVE_KEYWORDS = {
 ORDER_KEYWORDS = {
     "don hang", "ma don", "order", "tinh trang don", "trang thai don", "van don",
 }
+ORDER_TOTAL_KEYWORDS = {
+    "gia don", "gia don hang", "tong tien", "tong gia", "tong thanh toan",
+    "so tien", "thanh tien", "bao nhieu tien", "can thanh toan", "tri gia",
+    "total", "amount",
+}
 PAYMENT_KEYWORDS = {
     "thanh toan", "payment", "qr", "chuyen khoan", "paid", "unpaid", "giao dich",
 }
@@ -172,6 +177,24 @@ def _contains_any(haystack: str, keywords: set[str]) -> bool:
     return any(keyword in haystack for keyword in keywords)
 
 
+def _has_price_intent(folded_question: str) -> bool:
+    normalized = _normalize_space(folded_question)
+    tokens = set(normalized.split())
+    return (
+        "gia" in tokens
+        or "price" in tokens
+        or "bao nhieu" in normalized
+        or "bao nhju" in normalized
+        or "gia goc" in normalized
+    )
+
+
+def _is_order_total_question(folded_question: str) -> bool:
+    if _contains_any(folded_question, ORDER_TOTAL_KEYWORDS):
+        return True
+    return _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS) and _has_price_intent(folded_question)
+
+
 def _has_specific_product_terms(message: str) -> bool:
     for raw_token in _TOKEN_PATTERN.findall(message.lower()):
         folded = _fold_text(raw_token)
@@ -183,7 +206,12 @@ def _has_specific_product_terms(message: str) -> bool:
 def _should_search_product_context(folded_question: str, product_id: int | None) -> bool:
     if product_id is not None:
         return True
-    is_non_product_intent = _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS | POLICY_KEYWORDS)
+    is_non_product_intent = _contains_any(
+        folded_question,
+        ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS | POLICY_KEYWORDS,
+    )
+    if is_non_product_intent and not _contains_any(folded_question, ADD_TO_CART_KEYWORDS):
+        return False
     is_specific_product_intent = _contains_any(
         folded_question,
         PRICE_KEYWORDS
@@ -193,13 +221,11 @@ def _should_search_product_context(folded_question: str, product_id: int | None)
         | ADD_TO_CART_KEYWORDS
         | RECOMMENDATION_KEYWORDS,
     )
-    if is_non_product_intent and not is_specific_product_intent:
-        return False
     return is_specific_product_intent or _contains_any(folded_question, PRODUCT_CONTEXT_KEYWORDS) or not is_non_product_intent
 
 
 def _should_use_last_product_context(folded_question: str, message: str) -> bool:
-    if _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS | POLICY_KEYWORDS):
+    if _contains_any(folded_question, ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS | POLICY_KEYWORDS):
         return False
     if not _contains_any(
         folded_question,
@@ -406,12 +432,24 @@ def _product_source(product: Product) -> ChatbotSourceOut:
     )
 
 
+def _order_currency(order: Order) -> str:
+    latest_payment = order.latest_payment
+    if latest_payment and latest_payment.currency:
+        return latest_payment.currency
+    return "VND"
+
+
+def _format_order_amount(order: Order, amount: float | None) -> str:
+    return _format_price(amount, _order_currency(order))
+
+
 def _order_source(order: Order) -> ChatbotSourceOut:
     return ChatbotSourceOut(
         type="order",
         title=order.order_code or f"Đơn hàng {order.id}",
         snippet=(
             f"Trạng thái {ORDER_STATUS_LABELS.get(order.status, order.status)} | "
+            f"Tổng tiền {_format_order_amount(order, order.total_amount)} | "
             f"Thanh toán {PAYMENT_STATUS_LABELS.get(order.payment_status, order.payment_status)}"
         ),
         source_id=str(order.id),
@@ -478,6 +516,9 @@ def _build_order_context_text(orders: list[Order]) -> str:
         parts = [
             f"Mã đơn: {order.order_code or order.id}",
             f"Trạng thái đơn: {ORDER_STATUS_LABELS.get(order.status, order.status)}",
+            f"Tạm tính: {_format_order_amount(order, order.subtotal_amount)}",
+            f"Giảm giá: {_format_order_amount(order, order.discount_amount)}",
+            f"Tổng tiền: {_format_order_amount(order, order.total_amount)}",
             f"Thanh toán: {PAYMENT_STATUS_LABELS.get(order.payment_status, order.payment_status)}",
         ]
         if item_names:
@@ -558,7 +599,15 @@ def _build_order_answer(orders: list[Order], folded_question: str) -> str:
     order = orders[0]
     parts = [f"Đơn {order.order_code or order.id} hiện {ORDER_STATUS_LABELS.get(order.status, order.status)}."]
 
-    if _contains_any(folded_question, PAYMENT_KEYWORDS):
+    if _is_order_total_question(folded_question):
+        parts.append(f"Tổng tiền đơn hàng là {_format_order_amount(order, order.total_amount)}.")
+        if order.discount_amount and order.discount_amount > 0:
+            parts.append(
+                f"Đơn được giảm {_format_order_amount(order, order.discount_amount)} "
+                f"từ tạm tính {_format_order_amount(order, order.subtotal_amount)}."
+            )
+
+    if _contains_any(folded_question, PAYMENT_KEYWORDS | ORDER_TOTAL_KEYWORDS):
         if order.payment_method == "cod" and order.payment_status == PaymentStatus.UNPAID.value:
             parts.append("Đơn này thanh toán khi nhận hàng.")
         else:
@@ -592,7 +641,7 @@ def _build_knowledge_answer(item: ChatKnowledgeItem) -> str:
 
 
 def _build_missing_info_answer(folded_question: str, current_user: User | None) -> tuple[str, bool, str | None]:
-    if _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS) and current_user is None:
+    if _contains_any(folded_question, ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS) and current_user is None:
         return (
             "Bạn vui lòng đăng nhập để mình kiểm tra đúng đơn hàng và trạng thái thanh toán của tài khoản của bạn.",
             False,
@@ -985,7 +1034,10 @@ def _should_use_ai(folded_question: str, context: ChatContext) -> bool:
         return False
     if not (context.products or context.orders or context.knowledge_items):
         return False
-    if _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS | PRICE_KEYWORDS | STOCK_KEYWORDS | ADD_TO_CART_KEYWORDS):
+    if _contains_any(
+        folded_question,
+        ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS | PRICE_KEYWORDS | STOCK_KEYWORDS | ADD_TO_CART_KEYWORDS,
+    ):
         return False
     return True
 
@@ -1247,7 +1299,7 @@ def _build_fallback_answer(
             None,
         )
 
-    if _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS):
+    if _contains_any(folded_question, ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS):
         if context.orders:
             return _build_order_answer(context.orders, folded_question), False, None
         return _build_missing_info_answer(folded_question, current_user)
@@ -1485,9 +1537,9 @@ async def handle_chat_message(
     )
 
     order_code = _extract_order_code(request.message)
-    if current_user is not None and _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS):
+    if current_user is not None and _contains_any(folded_question, ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS):
         context.orders = await _search_orders(db, current_user, order_code=order_code)
-    elif current_user is None and _contains_any(folded_question, ORDER_KEYWORDS | PAYMENT_KEYWORDS):
+    elif current_user is None and _contains_any(folded_question, ORDER_KEYWORDS | ORDER_TOTAL_KEYWORDS | PAYMENT_KEYWORDS):
         context.actions.append(
             ChatbotActionOut(
                 type="login_required",
